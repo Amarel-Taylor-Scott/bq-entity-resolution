@@ -1,0 +1,252 @@
+# Advanced Signal Framework Example
+# Demonstrates: hard positives, severity-classified hard negatives,
+# entity-type conditions, score banding, and confidence shaping.
+
+version: "1.0"
+
+project:
+  name: advanced_signals_demo
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: er_bronze
+  bq_dataset_silver: er_silver
+  bq_dataset_gold: er_gold
+
+sources:
+  - name: entities
+    table: "${BQ_PROJECT}.raw.entities"
+    unique_key: entity_id
+    updated_at: updated_at
+    columns:
+      - name: full_name
+        role: full_name
+      - name: email
+        role: email
+      - name: phone
+        role: phone
+      - name: ssn
+      - name: ein
+      - name: entity_type
+      - name: dob
+        role: dob
+      - name: address
+        role: address
+      - name: city
+        role: city
+      - name: state
+        role: state
+
+feature_engineering:
+  entity_type_column: entity_type_class  # Enables entity_type_condition gating on signals
+  name_features:
+    features:
+      - name: name_clean
+        function: name_clean
+        input: full_name
+      - name: entity_type_class
+        function: entity_type_classify
+        input: full_name
+      - name: gen_suffix
+        function: extract_generational_suffix
+        input: full_name
+      - name: email_domain_cat
+        function: email_domain_category
+        input: email
+      - name: email_is_role
+        function: email_is_role_address
+        input: email
+      - name: is_hoa_trust
+        function: is_hoa_trust_careof
+        input: full_name
+      - name: geo_qualifier
+        function: geographic_qualifier
+        input: full_name
+  blocking_keys:
+    - name: bk_name_soundex
+      function: soundex
+      inputs: [name_clean]
+    - name: bk_email_fp
+      function: farm_fingerprint
+      inputs: [email]
+
+# ---------------------------------------------------------------------------
+# Global hard negatives apply to ALL tiers.
+# Severity levels (most to least severe):
+#   hn1_critical   - same entity submitted twice (data quality issue)
+#   hn2_structural - fundamentally different entity types
+#   hn3_identity   - identity-defining attributes conflict
+#   hn4_contextual - soft contextual disagreement
+# ---------------------------------------------------------------------------
+global_hard_negatives:
+  - left: gen_suffix
+    right: gen_suffix
+    method: different
+    action: disqualify
+    severity: hn3_identity
+    entity_type_condition: personal
+    category: generational
+
+  - left: is_hoa_trust
+    method: exact
+    action: disqualify
+    severity: hn2_structural
+    category: entity_type
+    sql: "(l.is_hoa_trust = 1 OR r.is_hoa_trust = 1)"
+
+  - left: geo_qualifier
+    right: geo_qualifier
+    method: different
+    action: penalize
+    penalty: -3.0
+    severity: hn4_contextual
+    category: geographic
+    requires_overrides: 2
+
+# ---------------------------------------------------------------------------
+# Global hard positives apply to ALL tiers.
+# Actions:
+#   boost      - add points to the match score
+#   auto_match - accept the pair regardless of threshold
+# ---------------------------------------------------------------------------
+global_hard_positives:
+  - left: ssn
+    right: ssn
+    method: exact
+    action: boost
+    boost: 10.0
+    category: strong_identifier
+
+  - left: ein
+    right: ein
+    method: exact
+    action: auto_match
+    entity_type_condition: business
+    category: tax_identifier
+
+# ---------------------------------------------------------------------------
+# Global soft signals: small bonuses or penalties that nudge the score
+# without triggering disqualification or auto-match.
+# ---------------------------------------------------------------------------
+global_soft_signals:
+  - left: state
+    right: state
+    method: exact
+    bonus: 0.5
+    category: geographic
+
+  - left: email_is_role
+    method: exact
+    bonus: -1.0
+    category: email_quality
+    sql: "(l.email_is_role = 1 AND r.email_is_role = 1)"
+
+# ===========================================================================
+# Matching Tiers
+# ===========================================================================
+matching_tiers:
+  # -------------------------------------------------------------------------
+  # Tier 1: Exact - deterministic matching on strong identifiers
+  # -------------------------------------------------------------------------
+  - name: exact
+    description: "Deterministic matching on strong identifiers"
+    blocking:
+      paths:
+        - keys: [bk_email_fp]
+          candidate_limit: 200
+          bucket_size_limit: 1000
+    comparisons:
+      - left: email
+        right: email
+        method: exact
+        weight: 5.0
+      - left: name_clean
+        right: name_clean
+        method: exact
+        weight: 3.0
+      - left: phone
+        right: phone
+        method: exact
+        weight: 2.0
+    threshold:
+      min_score: 5.0
+    hard_positives:
+      - left: ssn
+        right: ssn
+        method: exact
+        action: elevate_band
+        target_band: HIGH
+    score_banding:
+      enabled: true
+      bands:
+        - name: HIGH
+          min_score: 8.0
+          action: accept
+        - name: MEDIUM
+          min_score: 5.0
+          max_score: 8.0
+          action: review
+        # LOW captures auto_match pairs that bypass threshold with low scores
+        - name: LOW
+          min_score: 0.0
+          max_score: 5.0
+          action: reject
+
+  # -------------------------------------------------------------------------
+  # Tier 2: Fuzzy - fuzzy matching with entity-type-aware signals
+  # -------------------------------------------------------------------------
+  - name: fuzzy
+    description: "Fuzzy matching with entity-type-aware signals"
+    blocking:
+      paths:
+        - keys: [bk_name_soundex]
+          candidate_limit: 150
+    comparisons:
+      - left: name_clean
+        right: name_clean
+        method: jaro_winkler
+        weight: 4.0
+      - left: email
+        right: email
+        method: levenshtein
+        params: {max_distance: 2}
+        weight: 3.0
+      - left: phone
+        right: phone
+        method: exact
+        weight: 2.0
+    threshold:
+      min_score: 4.0
+    hard_negatives:
+      - left: entity_type_class
+        right: entity_type_class
+        method: different
+        action: penalize
+        penalty: -2.0
+        severity: hn3_identity
+        category: entity_type_mismatch
+    soft_signals:
+      - left: email_domain_cat
+        right: email_domain_cat
+        method: exact
+        bonus: 0.5
+        category: email_domain
+        entity_type_condition: personal
+
+# ===========================================================================
+# Reconciliation
+# ===========================================================================
+reconciliation:
+  strategy: tier_priority
+  clustering:
+    method: connected_components
+    max_iterations: 20
+  confidence_shaping:
+    group_size_penalty: true
+    group_size_threshold: 10
+    group_size_penalty_rate: 0.02
+    hub_node_detection: true
+    hub_degree_threshold: 20
+  canonical_selection:
+    method: completeness
+  output:
+    include_match_metadata: true
+    entity_id_prefix: "ADV"

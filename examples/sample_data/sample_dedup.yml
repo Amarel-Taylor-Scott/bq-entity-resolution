@@ -1,0 +1,167 @@
+# Sample Deduplication Config
+#
+# A minimal working config for deduplicating the customers.csv sample dataset.
+# Designed for local testing with the DuckDB backend (no BigQuery required).
+#
+# Usage:
+#   bq-er validate --config examples/sample_data/sample_dedup.yml
+#   bq-er preview-sql --config examples/sample_data/sample_dedup.yml --tier exact --stage all
+
+version: "1.0"
+
+project:
+  name: "sample_dedup"
+  bq_project: "local"
+  bq_dataset_bronze: "bronze"
+  bq_dataset_silver: "silver"
+  bq_dataset_gold: "gold"
+
+sources:
+  - name: "customers"
+    table: "local.bronze.customers"
+    unique_key: "id"
+    updated_at: "created_at"
+    columns:
+      - name: "id"
+        type: "STRING"
+      - name: "first_name"
+        type: "STRING"
+      - name: "last_name"
+        type: "STRING"
+      - name: "email"
+        type: "STRING"
+      - name: "phone"
+        type: "STRING"
+      - name: "address_line_1"
+        type: "STRING"
+      - name: "city"
+        type: "STRING"
+      - name: "state"
+        type: "STRING"
+      - name: "zip"
+        type: "STRING"
+      - name: "date_of_birth"
+        type: "STRING"
+      - name: "created_at"
+        type: "TIMESTAMP"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+feature_engineering:
+  # Name features
+  name_features:
+    features:
+      - name: "fn_clean"
+        function: "name_clean"
+        input: "first_name"
+      - name: "ln_clean"
+        function: "name_clean"
+        input: "last_name"
+      - name: "fn_soundex"
+        function: "soundex"
+        input: "first_name"
+
+  # Contact features
+  contact_features:
+    features:
+      - name: "email_dom"
+        function: "email_domain"
+        input: "email"
+
+  # Blocking keys
+  blocking_keys:
+    - name: "bk_ln_soundex"
+      function: "soundex"
+      inputs: ["last_name"]
+    - name: "bk_zip"
+      function: "identity"
+      inputs: ["zip"]
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+matching_tiers:
+  # Tier 1: Exact matches on cleaned names + email
+  - name: "exact"
+    description: "Exact match on cleaned names and email"
+    blocking:
+      paths:
+        - keys: ["bk_ln_soundex", "bk_zip"]
+    comparisons:
+      - left: "fn_clean"
+        right: "fn_clean"
+        method: "exact"
+        weight: 1.0
+      - left: "ln_clean"
+        right: "ln_clean"
+        method: "exact"
+        weight: 1.0
+      - left: "email"
+        right: "email"
+        method: "exact"
+        weight: 2.0
+    threshold:
+      method: "sum"
+      min_score: 2.0
+
+  # Tier 2: Fuzzy matching on names with phonetic and string distance
+  - name: "fuzzy"
+    description: "Fuzzy match using edit distance and phonetic similarity"
+    blocking:
+      paths:
+        - keys: ["bk_ln_soundex"]
+    comparisons:
+      - left: "fn_clean"
+        right: "fn_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.7 }
+        weight: 2.0
+      - left: "ln_clean"
+        right: "ln_clean"
+        method: "jaro_winkler"
+        params: { threshold: 0.85 }
+        weight: 2.0
+      - left: "email"
+        right: "email"
+        method: "exact"
+        weight: 2.0
+      - left: "phone"
+        right: "phone"
+        method: "exact"
+        weight: 1.0
+    threshold:
+      method: "sum"
+      min_score: 2.0
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+  canonical_selection:
+    method: "field_merge"
+    field_strategies:
+      - column: "first_name"
+        strategy: "most_common"
+      - column: "last_name"
+        strategy: "most_common"
+      - column: "email"
+        strategy: "most_complete"
+  output:
+    include_match_metadata: true
+    entity_id_prefix: "CUST"
+
+# ---------------------------------------------------------------------------
+# Disable features not needed for local testing
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: false
+
+monitoring:
+  log_level: "INFO"
+  log_format: "text"
+  metrics:
+    enabled: false

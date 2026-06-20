@@ -1,0 +1,350 @@
+# Real Estate Property Matching
+# ===========================================================================
+#
+# Matches property records across multiple listing services (MLS), county
+# assessor databases, and real estate data aggregators. A single physical
+# property may appear in multiple systems with different identifiers,
+# address formatting, and metadata. Accurate property matching is essential
+# for automated valuation models (AVMs), portfolio analytics, investment
+# due diligence, and compliance with fair lending regulations.
+#
+# Key identifiers:
+#   parcel_number   -- County assessor parcel number (APN). Format varies
+#                      by county: "123-456-789", "1234567890", etc.
+#   mls_id          -- Multiple Listing Service identifier. Unique within
+#                      a regional MLS but not globally unique.
+#   address         -- Street address is the most universal property link.
+#
+# Matching strategy (two tiers):
+#   1. exact   -- Deterministic match on parcel number or MLS ID
+#   2. fuzzy   -- Fuzzy address matching (street + city + state + ZIP)
+#
+# Property matching differs from person matching:
+#   - No "name" -- the address IS the identity
+#   - Parcel numbers are definitive but format-inconsistent
+#   - Address variations are extremely common (abbreviations, unit numbers)
+#   - ZIP codes provide strong geographic partitioning
+#
+# Usage:
+#   bq-er validate --config config/examples/real_estate_property.yml
+#   bq-er preview-sql --config config/examples/real_estate_property.yml --tier exact --stage all
+#   bq-er run --config config/examples/real_estate_property.yml --dry-run
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Project: dataset routing
+# ---------------------------------------------------------------------------
+project:
+  name: "real_estate_property_match"
+  description: "Match property records across MLS, assessor, and aggregator systems"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "property_bronze"
+  bq_dataset_silver: "property_silver"
+  bq_dataset_gold: "property_gold"
+  bq_location: "US"
+  watermark_dataset: "property_meta"
+
+# ---------------------------------------------------------------------------
+# Source: property records from multiple listing and assessor systems
+# ---------------------------------------------------------------------------
+sources:
+  - name: "properties"
+    table: "${BQ_PROJECT}.raw_realestate.property_records"
+    unique_key: "property_record_id"
+    updated_at: "last_updated"
+    columns:
+      - name: "property_record_id"
+        type: "STRING"
+      - name: "parcel_number"
+        type: "STRING"
+        # Assessor Parcel Number (APN). The definitive property identifier
+        # assigned by the county. Format varies widely by jurisdiction:
+        # "123-45-678", "1234567890", "R00123456". When present and
+        # matching (after normalization), this is a confirmed link.
+      - name: "mls_id"
+        type: "STRING"
+        # MLS listing identifier. Unique within a given MLS region but
+        # not globally unique. Combined with address for confirmation.
+      - name: "address_line_1"
+        type: "STRING"
+        role: "address_line_1"
+        # Street address: "123 Main St", "123 MAIN STREET APT 4B".
+        # This is the primary matching field for properties without
+        # parcel numbers.
+      - name: "city"
+        type: "STRING"
+        role: "city"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip_code"
+        type: "STRING"
+        role: "zip"
+      - name: "source_system"
+        type: "STRING"
+        # Originating system: MLS, ASSESSOR, AGGREGATOR, TAX_RECORDS.
+      - name: "last_updated"
+        type: "TIMESTAMP"
+    passthrough_columns:
+      - "source_system"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+feature_engineering:
+
+  # --- Address features ---
+  # Address is the primary identity for property matching. Extensive
+  # standardization is critical since the same property may be listed as:
+  #   "123 N Main St Apt 2B" vs "123 NORTH MAIN STREET, UNIT 2-B"
+  address_features:
+    enabled: true
+    features:
+      - name: "address_clean"
+        function: "address_standardize"
+        input: "address_line_1"
+        # Normalizes street abbreviations (St->STREET, Ave->AVENUE),
+        # directionals (N->NORTH), and whitespace.
+      - name: "city_clean"
+        function: "upper_trim"
+        input: "city"
+      - name: "state_clean"
+        function: "upper_trim"
+        input: "state"
+      - name: "zip5"
+        function: "left"
+        input: "zip_code"
+        params: { length: 5 }
+      - name: "zip3"
+        function: "left"
+        input: "zip_code"
+        params: { length: 3 }
+        # First 3 digits of ZIP -- groups properties in the same
+        # metropolitan/regional area for broader blocking.
+
+  # --- Identifier features ---
+  contact_features:
+    enabled: true
+    features:
+      - name: "parcel_clean"
+        function: "upper_trim"
+        input: "parcel_number"
+        # Basic parcel number normalization. Ideally, a custom function
+        # would strip dashes, dots, and leading zeros to normalize
+        # across county formats.
+      - name: "mls_id_clean"
+        function: "upper_trim"
+        input: "mls_id"
+
+  # --- Blocking keys ---
+  # Property blocking strategy:
+  #   bk_parcel     -- Parcel number (definitive match when available)
+  #   bk_mls        -- MLS ID (unique within a region)
+  #   bk_addr_zip   -- Address + ZIP for geographic clustering
+  #   bk_zip_city   -- ZIP + city for broader address fuzzy matching
+  blocking_keys:
+    - name: "bk_parcel"
+      function: "farm_fingerprint"
+      inputs: ["parcel_clean"]
+      # Parcel number -- the gold standard for property identification.
+
+    - name: "bk_mls"
+      function: "farm_fingerprint"
+      inputs: ["mls_id_clean"]
+      # MLS ID -- unique per listing within a regional MLS.
+
+    - name: "bk_addr_zip"
+      function: "farm_fingerprint_concat"
+      inputs: ["address_clean", "zip5"]
+      # Address + ZIP combination -- high selectivity for exact
+      # address matching within a postal area.
+
+    - name: "bk_zip_city"
+      function: "farm_fingerprint_concat"
+      inputs: ["zip5", "city_clean"]
+      # ZIP + city -- groups properties in the same location for
+      # fuzzy address matching (catches address typos).
+
+  # --- Composite keys ---
+  composite_keys:
+    - name: "ck_full_address"
+      function: "farm_fingerprint_concat"
+      inputs: ["address_clean", "city_clean", "state_clean", "zip5"]
+      # Full standardized address fingerprint.
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+matching_tiers:
+
+  # -------------------------------------------------------------------------
+  # Tier 1: Exact match on parcel number or MLS ID
+  # -------------------------------------------------------------------------
+  # Deterministic match on official property identifiers. Parcel numbers
+  # are assigned by county assessors and are globally unique within a
+  # state+county combination. MLS IDs are regionally unique. Address
+  # comparison provides a safety check.
+  - name: "exact"
+    description: "Deterministic match on parcel number or MLS ID with address check"
+    confidence: 1.0
+    blocking:
+      paths:
+        - keys: ["bk_parcel"]
+          candidate_limit: 30
+        - keys: ["bk_mls"]
+          candidate_limit: 30
+        - keys: ["ck_full_address"]
+          candidate_limit: 50
+    comparisons:
+      - left: "parcel_clean"
+        right: "parcel_clean"
+        method: "exact"
+        weight: 8.0
+        # Parcel number exact match -- definitive property identifier.
+
+      - left: "mls_id_clean"
+        right: "mls_id_clean"
+        method: "exact"
+        weight: 6.0
+        # MLS ID exact match -- regionally unique listing.
+
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 2.0
+        # ZIP code confirms same postal area (guards against parcel
+        # number collisions across counties).
+
+      - left: "city_clean"
+        right: "city_clean"
+        method: "exact"
+        weight: 1.0
+        # City match for geographic confirmation.
+
+    threshold:
+      method: "sum"
+      min_score: 8.0
+      # Parcel (8) alone qualifies. MLS (6) + ZIP (2) = 8 also qualifies.
+
+    hard_negatives:
+      - left: "state_clean"
+        method: "different"
+        action: "disqualify"
+        # Different states mean different properties -- parcel numbers
+        # are only unique within a state+county.
+
+    soft_signals: []
+
+  # -------------------------------------------------------------------------
+  # Tier 2: Fuzzy address matching
+  # -------------------------------------------------------------------------
+  # Catches property records without parcel/MLS IDs (common in aggregator
+  # feeds) or with different parcel formatting. Uses fuzzy address matching
+  # -- the address IS the property identity when official IDs are missing.
+  - name: "fuzzy"
+    description: "Fuzzy address matching for records without official IDs"
+    confidence: 0.88
+    blocking:
+      paths:
+        - keys: ["bk_addr_zip"]
+          candidate_limit: 100
+        - keys: ["bk_zip_city"]
+          candidate_limit: 200
+    comparisons:
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.80 }
+        weight: 5.0
+        # Fuzzy address -- handles abbreviations, unit number formatting,
+        # and minor typos. "123 MAIN STREET APT 2" vs "123 MAIN ST #2".
+
+      - left: "city_clean"
+        right: "city_clean"
+        method: "exact"
+        weight: 1.5
+        # City exact match.
+
+      - left: "state_clean"
+        right: "state_clean"
+        method: "exact"
+        weight: 1.5
+        # State exact match.
+
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 2.0
+        # ZIP code match -- strong geographic confirmation.
+
+    threshold:
+      method: "sum"
+      min_score: 8.0
+      # Address (5) + city (1.5) + state (1.5) + ZIP (2) = 10.
+      # Requires strong address match + at least ZIP + one location field.
+
+    hard_negatives:
+      - left: "state_clean"
+        method: "different"
+        action: "disqualify"
+        # Different states are always disqualifying for property matching.
+
+      - left: "zip5"
+        method: "different"
+        action: "penalize"
+        penalty: -3.0
+        # Different ZIP codes are a strong contra-indicator. Properties
+        # at the same address should have the same ZIP.
+
+    soft_signals:
+      - left: "zip3"
+        method: "exact"
+        bonus: 0.5
+        # Same ZIP-3 prefix confirms the same metropolitan area.
+
+      - left: "parcel_clean"
+        method: "exact"
+        bonus: 4.0
+        # Parcel number match in the fuzzy tier is very strong confirmation.
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+    max_iterations: 10
+    # Property clusters are typically small (2-5 records from different
+    # sources for the same physical property). Low max_iterations suffices.
+  canonical_selection:
+    method: "completeness"
+    # Most complete record becomes the canonical property entry.
+    # Assessor records typically have the most fields populated.
+  output:
+    include_match_metadata: true
+    include_passthrough: true
+    entity_id_prefix: "PROP"
+    # Resolved property IDs: PROP_000001, PROP_000002, etc.
+
+# ---------------------------------------------------------------------------
+# Incremental processing
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: true
+  grace_period_hours: 48
+  cursor_columns: ["last_updated"]
+  batch_size: 1000000
+  # Property databases update less frequently than transactional systems.
+  # 48-hour grace period catches weekly assessor feed delays.
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  log_level: "INFO"
+  log_format: "json"
+  metrics:
+    enabled: true
+    destination: "bigquery"

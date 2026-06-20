@@ -1,0 +1,377 @@
+# Logistics Carrier / Vendor Deduplication
+# ===========================================================================
+#
+# Deduplicates carrier and freight vendor records in transportation and
+# logistics operations. Shippers and 3PLs onboard hundreds of carriers
+# across multiple procurement systems, TMS platforms, and load boards.
+# The same carrier frequently appears under slightly different legal names,
+# addresses, or identifier formats -- creating duplicate vendor codes,
+# inconsistent rate tables, and compliance blind spots.
+#
+# Key identifiers:
+#   duns_number     -- Dun & Bradstreet 9-digit unique business identifier
+#   mc_dot_number   -- FMCSA Motor Carrier (MC) or DOT number
+#   carrier_scac    -- Standard Carrier Alpha Code (2-4 letter code)
+#   ein             -- Employer Identification Number (IRS tax ID)
+#
+# Matching strategy (two tiers):
+#   1. exact_id  -- Deterministic match on DUNS, MC/DOT, or EIN
+#   2. fuzzy     -- Fuzzy company name + address for records missing IDs
+#
+# Usage:
+#   bq-er validate --config config/examples/logistics_carrier.yml
+#   bq-er preview-sql --config config/examples/logistics_carrier.yml --tier exact_id --stage all
+#   bq-er run --config config/examples/logistics_carrier.yml --dry-run
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Project: dataset routing
+# ---------------------------------------------------------------------------
+project:
+  name: "logistics_carrier_dedup"
+  description: "Deduplicate carrier and freight vendor records across TMS systems"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "carrier_bronze"
+  bq_dataset_silver: "carrier_silver"
+  bq_dataset_gold: "carrier_gold"
+  bq_location: "US"
+  watermark_dataset: "carrier_meta"
+
+# ---------------------------------------------------------------------------
+# Source: carrier/vendor records from procurement and TMS
+# ---------------------------------------------------------------------------
+sources:
+  - name: "carriers"
+    table: "${BQ_PROJECT}.raw_logistics.carrier_records"
+    unique_key: "carrier_record_id"
+    updated_at: "last_modified"
+    columns:
+      - name: "carrier_record_id"
+        type: "STRING"
+      - name: "duns_number"
+        type: "STRING"
+        # Dun & Bradstreet number -- 9-digit globally unique business ID.
+        # The gold standard for business entity identification when present.
+      - name: "mc_dot_number"
+        type: "STRING"
+        # FMCSA Motor Carrier or DOT number. Identifies the carrier's
+        # federal operating authority. Format varies: "MC-123456" or
+        # "DOT-789012" or just digits.
+      - name: "carrier_scac"
+        type: "STRING"
+        # Standard Carrier Alpha Code (2-4 letters). Assigned by NMFTA.
+        # Unique per carrier but not all carriers have one.
+      - name: "company_name"
+        type: "STRING"
+        # Legal or DBA name of the carrier. Subject to wide variation:
+        # "ABC Trucking LLC" vs "ABC TRUCKING, L.L.C." vs "ABC TRKING".
+      - name: "ein"
+        type: "STRING"
+        role: "ein"
+        # IRS Employer Identification Number (XX-XXXXXXX).
+        # Unique per legal business entity.
+      - name: "address"
+        type: "STRING"
+        role: "address_line_1"
+      - name: "city"
+        type: "STRING"
+        role: "city"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip"
+        type: "STRING"
+        role: "zip"
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+      - name: "source_system"
+        type: "STRING"
+      - name: "last_modified"
+        type: "TIMESTAMP"
+    passthrough_columns:
+      - "source_system"
+      - "carrier_scac"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+feature_engineering:
+
+  # --- Company name features ---
+  name_features:
+    enabled: true
+    features:
+      - name: "company_name_clean"
+        function: "name_clean"
+        input: "company_name"
+        # Basic cleaning: uppercase, strip punctuation, normalize whitespace.
+      - name: "company_core_name"
+        function: "strip_business_suffix"
+        input: "company_name_clean"
+        # Removes LLC, Inc, Corp, Ltd, etc. to get the core business name.
+        # "ABC TRUCKING LLC" -> "ABC TRUCKING"
+      - name: "company_name_soundex"
+        function: "soundex"
+        input: "company_core_name"
+        # Phonetic encoding for fuzzy blocking on company names.
+
+  # --- Address features ---
+  address_features:
+    enabled: true
+    features:
+      - name: "address_clean"
+        function: "address_standardize"
+        input: "address"
+      - name: "city_clean"
+        function: "upper_trim"
+        input: "city"
+      - name: "state_clean"
+        function: "upper_trim"
+        input: "state"
+      - name: "zip5"
+        function: "left"
+        input: "zip"
+        params: { length: 5 }
+
+  # --- Identifier and contact features ---
+  contact_features:
+    enabled: true
+    features:
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+      - name: "ein_clean"
+        function: "ein_format"
+        input: "ein"
+        # Standardizes EIN to XX-XXXXXXX format.
+      - name: "duns_clean"
+        function: "upper_trim"
+        input: "duns_number"
+        # DUNS: strip whitespace, ensure consistent format.
+      - name: "mc_dot_clean"
+        function: "upper_trim"
+        input: "mc_dot_number"
+        # MC/DOT number: normalize formatting.
+      - name: "scac_clean"
+        function: "upper_trim"
+        input: "carrier_scac"
+
+  # --- Blocking keys ---
+  # Carrier blocking strategy:
+  #   bk_duns        -- DUNS number (strongest unique ID)
+  #   bk_mc_dot      -- MC/DOT number (federal authority ID)
+  #   bk_ein         -- EIN (tax identifier)
+  #   bk_scac        -- SCAC code (carrier alpha code)
+  #   bk_name_state  -- Company name phonetic + state for fuzzy matching
+  #   bk_phone       -- Phone number for alternate linkage
+  blocking_keys:
+    - name: "bk_duns"
+      function: "farm_fingerprint"
+      inputs: ["duns_clean"]
+
+    - name: "bk_mc_dot"
+      function: "farm_fingerprint"
+      inputs: ["mc_dot_clean"]
+
+    - name: "bk_ein"
+      function: "farm_fingerprint"
+      inputs: ["ein_clean"]
+
+    - name: "bk_scac"
+      function: "farm_fingerprint"
+      inputs: ["scac_clean"]
+
+    - name: "bk_name_state"
+      function: "farm_fingerprint_concat"
+      inputs: ["company_name_soundex", "state_clean"]
+      # Phonetic company name + state -- effective for fuzzy matching
+      # since most carriers operate from a single headquarters state.
+
+    - name: "bk_phone"
+      function: "farm_fingerprint"
+      inputs: ["phone_clean"]
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+matching_tiers:
+
+  # -------------------------------------------------------------------------
+  # Tier 1: Exact ID match (DUNS, MC/DOT, or EIN)
+  # -------------------------------------------------------------------------
+  # Deterministic match on government/industry-issued identifiers.
+  # When DUNS, MC/DOT number, or EIN matches exactly, the records
+  # represent the same legal business entity. Company name comparison
+  # provides a safety check against identifier reassignment.
+  - name: "exact_id"
+    description: "Deterministic match on DUNS, MC/DOT, SCAC, or EIN"
+    confidence: 1.0
+    blocking:
+      paths:
+        - keys: ["bk_duns"]
+          candidate_limit: 30
+        - keys: ["bk_mc_dot"]
+          candidate_limit: 30
+        - keys: ["bk_ein"]
+          candidate_limit: 30
+        - keys: ["bk_scac"]
+          candidate_limit: 30
+    comparisons:
+      - left: "duns_clean"
+        right: "duns_clean"
+        method: "exact"
+        weight: 7.0
+        # DUNS number exact match -- globally unique business identifier.
+
+      - left: "mc_dot_clean"
+        right: "mc_dot_clean"
+        method: "exact"
+        weight: 6.0
+        # MC/DOT number match -- confirms same federal operating authority.
+
+      - left: "ein_clean"
+        right: "ein_clean"
+        method: "exact"
+        weight: 5.0
+        # EIN match -- same legal tax entity.
+
+      - left: "scac_clean"
+        right: "scac_clean"
+        method: "exact"
+        weight: 4.0
+        # SCAC code match -- assigned per carrier.
+
+      - left: "company_core_name"
+        right: "company_core_name"
+        method: "exact"
+        weight: 2.0
+        # Name confirmation guards against recycled IDs.
+
+    threshold:
+      method: "sum"
+      min_score: 6.0
+      # Any single strong ID (DUNS=7, MC/DOT=6, EIN=5) qualifies alone.
+      # SCAC (4) + name (2) = 6 also qualifies.
+
+    hard_negatives:
+      - left: "ein_clean"
+        method: "different"
+        action: "disqualify"
+        # Different EINs mean different legal entities -- never merge.
+
+    soft_signals: []
+
+  # -------------------------------------------------------------------------
+  # Tier 2: Fuzzy company name + address matching
+  # -------------------------------------------------------------------------
+  # Catches carrier records missing DUNS/MC/EIN (common for smaller
+  # owner-operators and regional carriers). Uses fuzzy company name
+  # matching combined with address similarity.
+  - name: "fuzzy"
+    description: "Fuzzy company name + address for records without matching IDs"
+    confidence: 0.85
+    blocking:
+      paths:
+        - keys: ["bk_name_state"]
+          candidate_limit: 200
+        - keys: ["bk_phone"]
+          candidate_limit: 100
+    comparisons:
+      - left: "company_core_name"
+        right: "company_core_name"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.80 }
+        weight: 4.0
+        # Fuzzy company name -- handles abbreviations and typos.
+        # "SWIFT TRANSPORTATION" vs "SWIFT TRANSPORT"
+
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.70 }
+        weight: 2.0
+        # Address similarity -- same headquarters location.
+
+      - left: "city_clean"
+        right: "city_clean"
+        method: "exact"
+        weight: 1.0
+        # City exact match.
+
+      - left: "state_clean"
+        right: "state_clean"
+        method: "exact"
+        weight: 1.0
+        # State exact match.
+
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 1.5
+        # ZIP code exact match.
+
+    threshold:
+      method: "sum"
+      min_score: 7.5
+      # Requires strong name match (4) + address/location signals (3.5+).
+
+    hard_negatives:
+      - left: "ein_clean"
+        method: "different"
+        action: "disqualify"
+        # Different EINs are always disqualifying.
+
+      - left: "state_clean"
+        method: "different"
+        action: "penalize"
+        penalty: -2.0
+        # Different states are a moderate negative for HQ-based matching.
+
+    soft_signals:
+      - left: "phone_clean"
+        method: "exact"
+        bonus: 2.0
+        # Same phone number is strong supporting evidence.
+
+      - left: "scac_clean"
+        method: "exact"
+        bonus: 3.0
+        # SCAC match in fuzzy tier provides high-confidence confirmation.
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+    max_iterations: 15
+  canonical_selection:
+    method: "completeness"
+    # Most complete record (fewest NULLs) becomes the canonical carrier entry.
+  output:
+    include_match_metadata: true
+    include_passthrough: true
+    entity_id_prefix: "CAR"
+    # Resolved carrier IDs: CAR_000001, CAR_000002, etc.
+
+# ---------------------------------------------------------------------------
+# Incremental processing
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: true
+  grace_period_hours: 24
+  cursor_columns: ["last_modified"]
+  batch_size: 500000
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  log_level: "INFO"
+  log_format: "json"
+  metrics:
+    enabled: true
+    destination: "bigquery"

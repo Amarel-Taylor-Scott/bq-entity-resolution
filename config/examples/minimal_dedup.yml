@@ -1,0 +1,65 @@
+# Minimal Entity Deduplication Example
+#
+# The simplest possible working config: one source, one tier, two comparisons.
+# Start here and add complexity as needed.
+#
+# Usage:
+#   export BQ_PROJECT=your-gcp-project
+#   bq-er validate --config config/examples/minimal_dedup.yml
+#   bq-er preview-sql --config config/examples/minimal_dedup.yml --tier exact --stage all
+
+version: "1.0"
+
+project:
+  name: minimal_dedup
+  bq_project: "${BQ_PROJECT}"
+
+sources:
+  - name: customers
+    table: "${BQ_PROJECT}.raw.customers"
+    unique_key: id
+    updated_at: updated_at
+    columns:
+      - name: id
+        type: STRING
+      - name: email
+        type: STRING
+      - name: full_name
+        type: STRING
+      - name: updated_at
+        type: TIMESTAMP
+
+# Feature engineering: clean columns and create blocking keys
+feature_engineering:
+  contact_features:
+    features:
+      - name: email_clean
+        function: lower_trim
+        input: email
+      - name: name_clean
+        function: name_clean
+        input: full_name
+
+  blocking_keys:
+    - name: bk_email
+      function: farm_fingerprint
+      inputs: [email_clean]
+
+# Single matching tier: exact email + fuzzy name
+matching_tiers:
+  - name: exact
+    blocking:
+      paths:
+        - keys: [bk_email]
+    comparisons:
+      - left: email_clean
+        right: email_clean
+        method: exact
+        weight: 5.0
+      - left: name_clean
+        right: name_clean
+        method: levenshtein
+        params: { max_distance: 2 }
+        weight: 3.0
+    threshold:
+      min_score: 5.0

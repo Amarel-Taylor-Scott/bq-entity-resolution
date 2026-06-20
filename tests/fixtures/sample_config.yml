@@ -1,0 +1,128 @@
+# Minimal test configuration
+version: "1.0"
+
+project:
+  name: "test_pipeline"
+  bq_project: "test-project"
+  bq_dataset_bronze: "test_bronze"
+  bq_dataset_silver: "test_silver"
+  bq_dataset_gold: "test_gold"
+  watermark_dataset: "test_meta"
+
+sources:
+  - name: "test_source"
+    table: "test-project.raw.entities"
+    unique_key: "id"
+    updated_at: "updated_at"
+    columns:
+      - name: "id"
+        type: "STRING"
+      - name: "first_name"
+        type: "STRING"
+        role: "first_name"
+      - name: "last_name"
+        type: "STRING"
+        role: "last_name"
+      - name: "email"
+        type: "STRING"
+        role: "email"
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip"
+        type: "STRING"
+        role: "zip"
+      - name: "updated_at"
+        type: "TIMESTAMP"
+
+feature_engineering:
+  name_features:
+    enabled: true
+    features:
+      - name: "first_name_clean"
+        function: "name_clean"
+        input: "first_name"
+      - name: "last_name_clean"
+        function: "name_clean"
+        input: "last_name"
+      - name: "last_name_soundex"
+        function: "soundex"
+        input: "last_name_clean"
+
+  address_features:
+    enabled: true
+    features:
+      - name: "state_clean"
+        function: "upper_trim"
+        input: "state"
+      - name: "zip5"
+        function: "left"
+        input: "zip"
+        params: { length: 5 }
+
+  contact_features:
+    enabled: true
+    features:
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+
+  blocking_keys:
+    - name: "bk_name_zip"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "zip5"]
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: ["email_clean"]
+
+  composite_keys:
+    - name: "ck_name_addr"
+      function: "farm_fingerprint_concat"
+      inputs: ["first_name_clean", "last_name_clean", "zip5"]
+
+matching_tiers:
+  - name: "exact"
+    blocking:
+      paths:
+        - keys: ["ck_name_addr"]
+          candidate_limit: 50
+    comparisons:
+      - left: "ck_name_addr"
+        right: "ck_name_addr"
+        method: "exact"
+        weight: 10.0
+    threshold:
+      min_score: 10.0
+    confidence: 1.0
+
+  - name: "fuzzy"
+    blocking:
+      paths:
+        - keys: ["bk_name_zip"]
+          candidate_limit: 100
+    comparisons:
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "levenshtein"
+        params: { max_distance: 2 }
+        weight: 3.0
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "exact"
+        weight: 3.0
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 2.0
+    threshold:
+      min_score: 6.0
+    soft_signals:
+      - left: "email_clean"
+        method: "exact_case_insensitive"
+        bonus: 2.0

@@ -1,0 +1,141 @@
+version: "1.0"
+
+project:
+  name: ecommerce_products
+  bq_project: "local-test"
+  bq_dataset_bronze: er_bronze
+  bq_dataset_silver: er_silver
+  bq_dataset_gold: er_gold
+  bq_dataset_meta: er_meta
+
+sources:
+  - name: ecommerce_products
+    table: "local-test.raw.ecommerce_products"
+    unique_key: id
+    updated_at: updated_at
+    columns:
+      - name: id
+        type: STRING
+      - name: product_name
+        type: STRING
+      - name: brand
+        type: STRING
+      - name: category
+        type: STRING
+      - name: description
+        type: STRING
+      - name: price
+        type: STRING
+      - name: sku
+        type: STRING
+      - name: upc
+        type: STRING
+      - name: seller_name
+        type: STRING
+      - name: updated_at
+        type: TIMESTAMP
+
+# ---------------------------------------------------------------------------
+# Embeddings (requires BigQuery ML -- uncomment for production BigQuery runs)
+# ---------------------------------------------------------------------------
+# In BigQuery, embedding-based matching excels for product deduplication because
+# product descriptions are semantically similar but worded differently across
+# sellers. For local DuckDB execution, we fall back to traditional exact/fuzzy
+# matching on SKU, UPC, brand, and product name.
+#
+# embeddings:
+#   enabled: true  # Requires BigQuery ML
+#   model: "textembedding-gecko@003"
+#   source_columns: [product_name_clean, brand_clean, description]
+#   dimensions: 768
+#   lsh:
+#     num_hash_tables: 20
+#     num_hash_functions_per_table: 8
+
+feature_engineering:
+  name_features:
+    features:
+      - name: product_name_clean
+        function: lower_trim
+        input: product_name
+      - name: brand_clean
+        function: lower_trim
+        input: brand
+  contact_features:
+    features:
+      - name: sku_clean
+        function: lower_trim
+        input: sku
+      - name: upc_clean
+        function: lower_trim
+        input: upc
+  blocking_keys:
+    - name: bk_sku_fp
+      function: farm_fingerprint
+      inputs: [sku_clean]
+    - name: bk_upc_fp
+      function: farm_fingerprint
+      inputs: [upc_clean]
+    - name: bk_brand_fp
+      function: farm_fingerprint
+      inputs: [brand_clean]
+
+comparison_pool:
+  sku_exact:
+    left: sku_clean
+    right: sku_clean
+    method: exact
+    weight: 8.0
+  upc_exact:
+    left: upc_clean
+    right: upc_clean
+    method: exact
+    weight: 8.0
+  brand_exact:
+    left: brand_clean
+    right: brand_clean
+    method: exact
+    weight: 3.0
+  product_name_exact:
+    left: product_name_clean
+    right: product_name_clean
+    method: exact
+    weight: 4.0
+
+matching_tiers:
+  - name: sku_match
+    description: "Exact SKU or UPC match -- high confidence product identity"
+    blocking:
+      cross_batch: false
+      paths:
+        - keys: [bk_sku_fp]
+        - keys: [bk_upc_fp]
+    comparisons:
+      - ref: sku_exact
+      - ref: upc_exact
+      - ref: brand_exact
+      - ref: product_name_exact
+    threshold:
+      min_score: 8.0
+
+  - name: brand_match
+    description: "Same brand with matching SKU or UPC -- catches case/format variations"
+    blocking:
+      cross_batch: false
+      paths:
+        - keys: [bk_brand_fp]
+    comparisons:
+      - ref: brand_exact
+      - ref: product_name_exact
+      - ref: sku_exact
+      - ref: upc_exact
+    threshold:
+      min_score: 11.0
+
+reconciliation:
+  clustering:
+    method: connected_components
+    max_iterations: 20
+
+monitoring:
+  log_level: INFO

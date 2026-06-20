@@ -1,0 +1,11 @@
+id,first_name,last_name,email,phone,city,state,zip,updated_at
+1,Jon,Smith,jsmith@work.com,5551234567,Springfield,IL,62701,2024-01-15 00:00:00
+2,Jane,Doe,jdoe@company.com,555-987-6543,Portland,OR,97201,2024-01-16 00:00:00
+3,Bob,Johnson,bob.johnson@hotmail.com,555-456-7891,Austin,TX,78701,2024-01-17 00:00:00
+4,David,Lee,david.lee@techco.com,555-555-6666,San Jose,CA,95101,2024-01-18 00:00:00
+5,Sara,Brown,sarah.brown@email.com,555-111-2223,Seattle,WA,98101,2024-01-19 00:00:00
+6,Mike,Chen,michael.chen@corp.com,555-444-5555,San Francisco,CA,94102,2024-01-20 00:00:00
+7,Laura,White,laura.white@inbox.com,555-234-5678,Dallas,TX,75201,2024-01-21 00:00:00
+8,Kevin,Park,kevin.park@firm.com,555-345-6789,Houston,TX,77001,2024-01-22 00:00:00
+9,Amanda,Rivera,amanda.r@gmail.com,555-456-1234,San Diego,CA,92101,2024-01-23 00:00:00
+10,Brian,Thompson,brian.t@outlook.com,555-567-8901,Minneapolis,MN,55401,2024-01-24 00:00:00

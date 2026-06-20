@@ -1,0 +1,312 @@
+# Multi-Source Cross-System Linkage
+#
+# Demonstrates linking records across 3 independent source systems:
+#   - CRM (customer contacts)
+#   - ERP (accounting customers)
+#   - Support (help desk tickets)
+#
+# Key concepts:
+#   - link_type: link_and_dedupe (both within + across sources)
+#   - Per-source watermarks (each source has own updated_at)
+#   - Cross-batch blocking against canonical_index
+#   - Enrichment join for geocoding
+#   - 3 matching tiers (exact, fuzzy, probabilistic)
+#
+# Usage:
+#   export BQ_PROJECT=your-gcp-project
+#   bq-er validate --config config/examples/multi_source_linkage.yml
+#   bq-er preview-sql --config config/examples/multi_source_linkage.yml --tier exact --stage all
+
+version: "1.0"
+
+project:
+  name: multi_source_linkage
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: er_bronze
+  bq_dataset_silver: er_silver
+  bq_dataset_gold: er_gold
+  bq_dataset_meta: er_meta
+
+# Three source systems with independent schemas
+sources:
+  - name: crm
+    table: "${BQ_PROJECT}.raw.crm_contacts"
+    unique_key: contact_id
+    updated_at: modified_date
+    entity_type: Person
+    columns:
+      - name: contact_id
+        type: STRING
+      - name: first_name
+        type: STRING
+        role: first_name
+      - name: last_name
+        type: STRING
+        role: last_name
+      - name: email_address
+        type: STRING
+        role: email
+      - name: phone_number
+        type: STRING
+        role: phone
+      - name: street
+        type: STRING
+        role: address_line_1
+      - name: city
+        type: STRING
+        role: city
+      - name: state
+        type: STRING
+        role: state
+      - name: zip
+        type: STRING
+        role: zip_code
+      - name: modified_date
+        type: TIMESTAMP
+
+  - name: erp
+    table: "${BQ_PROJECT}.raw.erp_customers"
+    unique_key: customer_id
+    updated_at: last_updated
+    entity_type: Person
+    columns:
+      - name: customer_id
+        type: STRING
+      - name: first_name
+        type: STRING
+        role: first_name
+      - name: last_name
+        type: STRING
+        role: last_name
+      - name: email_address
+        type: STRING
+        role: email
+      - name: phone_number
+        type: STRING
+        role: phone
+      - name: street
+        type: STRING
+        role: address_line_1
+      - name: city
+        type: STRING
+        role: city
+      - name: state
+        type: STRING
+        role: state
+      - name: zip
+        type: STRING
+        role: zip_code
+      - name: last_updated
+        type: TIMESTAMP
+
+  - name: support
+    table: "${BQ_PROJECT}.raw.support_tickets"
+    unique_key: ticket_id
+    updated_at: created_at
+    entity_type: Person
+    columns:
+      - name: ticket_id
+        type: STRING
+      - name: first_name
+        type: STRING
+        role: first_name
+      - name: last_name
+        type: STRING
+        role: last_name
+      - name: email_address
+        type: STRING
+        role: email
+      - name: phone_number
+        type: STRING
+        role: phone
+      - name: street
+        type: STRING
+        role: address_line_1
+      - name: city
+        type: STRING
+        role: city
+      - name: state
+        type: STRING
+        role: state
+      - name: zip
+        type: STRING
+        role: zip_code
+      - name: created_at
+        type: TIMESTAMP
+
+# Match both within and across source systems
+link_type: link_and_dedupe
+
+feature_engineering:
+  name_features:
+    features:
+      - name: first_name_clean
+        function: name_clean
+        input: first_name
+      - name: last_name_clean
+        function: name_clean
+        input: last_name
+
+  contact_features:
+    features:
+      - name: email_clean
+        function: lower_trim
+        input: email_address
+      - name: email_domain
+        function: email_domain
+        input: email_address
+      - name: phone_clean
+        function: phone_standardize
+        input: phone_number
+
+  address_features:
+    features:
+      - name: address_clean
+        function: address_standardize
+        input: street
+      - name: zip5
+        function: zip5
+        input: zip
+
+  blocking_keys:
+    # INT64 blocking keys for fast equi-joins
+    - name: bk_email_fp
+      function: farm_fingerprint
+      inputs: [email_clean]
+    - name: bk_name_dob_fp
+      function: farm_fingerprint_concat
+      inputs: [first_name_clean, last_name_clean]
+    - name: bk_phone_fp
+      function: farm_fingerprint
+      inputs: [phone_clean]
+    - name: bk_soundex_zip
+      function: farm_fingerprint_concat
+      inputs: [last_name_clean, zip5]
+
+# Comparison pool: reusable comparison definitions
+comparison_pool:
+  email_exact:
+    left: email_clean
+    right: email_clean
+    method: exact
+    weight: 5.0
+  name_exact:
+    left: first_name_clean
+    right: first_name_clean
+    method: exact
+    weight: 3.0
+  last_name_exact:
+    left: last_name_clean
+    right: last_name_clean
+    method: exact
+    weight: 3.0
+  name_fuzzy:
+    left: first_name_clean
+    right: first_name_clean
+    method: jaro_winkler
+    weight: 4.0
+  last_name_fuzzy:
+    left: last_name_clean
+    right: last_name_clean
+    method: jaro_winkler
+    weight: 4.0
+  phone_exact:
+    left: phone_clean
+    right: phone_clean
+    method: exact
+    weight: 4.0
+  address_lev:
+    left: address_clean
+    right: address_clean
+    method: levenshtein
+    weight: 2.0
+    params:
+      max_distance: 3
+  zip_exact:
+    left: zip5
+    right: zip5
+    method: exact
+    weight: 1.0
+
+matching_tiers:
+  # Tier 1: High-confidence exact matches
+  - name: exact
+    description: "Email or phone exact match + name confirmation"
+    blocking:
+      paths:
+        - keys: [bk_email_fp]
+        - keys: [bk_phone_fp]
+      cross_batch: true
+    comparisons:
+      - ref: email_exact
+      - ref: name_exact
+      - ref: last_name_exact
+      - ref: phone_exact
+    threshold:
+      min_score: 8.0
+
+  # Tier 2: Fuzzy name matching with address support
+  - name: fuzzy
+    description: "Fuzzy name + address or phone"
+    blocking:
+      paths:
+        - keys: [bk_name_dob_fp]
+        - keys: [bk_soundex_zip]
+      cross_batch: true
+    comparisons:
+      - ref: name_fuzzy
+      - ref: last_name_fuzzy
+      - ref: phone_exact
+      - ref: address_lev
+      - ref: zip_exact
+    threshold:
+      min_score: 7.0
+
+  # Tier 3: Broad fuzzy match for remaining unmatched
+  - name: broad
+    description: "Broader fuzzy match with lower threshold"
+    blocking:
+      paths:
+        - keys: [bk_soundex_zip]
+      cross_batch: true
+    comparisons:
+      - ref: name_fuzzy
+      - ref: last_name_fuzzy
+      - ref: email_exact
+      - ref: address_lev
+      - ref: zip_exact
+    threshold:
+      min_score: 6.0
+
+# Hard negatives: disqualify clearly different records
+global_hard_negatives:
+  - left: last_name_clean
+    method: different
+    action: disqualify
+    severity: hn1_critical
+    category: name_mismatch
+
+reconciliation:
+  clustering:
+    method: connected_components
+    max_iterations: 20
+  output:
+    entity_id_prefix: "CUST"
+
+# Note: incremental processing requires cursor_columns present in all sources.
+# Uncomment and configure when all sources share a common cursor column.
+# incremental:
+#   enabled: true
+#   cursor_columns: [_source_updated_at]
+#   batch_size: 2_000_000
+#   drain_mode: true
+#   drain_max_iterations: 50
+
+monitoring:
+  log_level: INFO
+  metrics:
+    enabled: true
+
+scale:
+  staging_clustering: [entity_uid, source_name]
+  matches_clustering: [left_entity_uid, right_entity_uid]

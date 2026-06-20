@@ -1,0 +1,271 @@
+# Compound Record Detection Example
+#
+# Demonstrates how to detect and handle compound records — entries
+# that represent multiple people in a single row, such as:
+#   "Mr. and Mrs. Smith"
+#   "Jane and Joe Smith"
+#   "The Johnson Family"
+#   "John/Jane Smith"
+#
+# Compound records cause false matches, inflate clusters, and degrade
+# entity resolution quality. This config shows three strategies:
+#
+#   1. Flag-only: Detect compounds and add a flag column. Use hard
+#      negatives to exclude them from exact matching tiers.
+#   2. Penalty: Use soft signals to penalize compound pairs in fuzzy
+#      matching tiers.
+#   3. Split (advanced): Expand compound rows into individual records
+#      before matching. Requires action: "split" or "both".
+#
+# Usage:
+#   export BQ_PROJECT=your-gcp-project
+#   bq-er validate --config config/examples/compound_detection.yml
+#   bq-er preview-sql --config config/examples/compound_detection.yml --tier fuzzy_name --stage all
+#   bq-er run --config config/examples/compound_detection.yml --dry-run
+
+version: "1.0"
+
+project:
+  name: compound_detection_demo
+  description: "Entity resolution with compound record detection"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "compound_demo_bronze"
+  bq_dataset_silver: "compound_demo_silver"
+  bq_dataset_gold: "compound_demo_gold"
+  bq_location: "US"
+  watermark_dataset: "compound_demo_meta"
+
+# ---------------------------------------------------------------------------
+# Source data
+# ---------------------------------------------------------------------------
+sources:
+  - name: "customers"
+    table: "${BQ_PROJECT}.raw_crm.customers"
+    unique_key: "customer_id"
+    updated_at: "modified_at"
+    columns:
+      - name: "customer_id"
+        type: "STRING"
+      - name: "first_name"
+        type: "STRING"
+        role: "first_name"
+      - name: "last_name"
+        type: "STRING"
+        role: "last_name"
+      - name: "email"
+        type: "STRING"
+        role: "email"
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+      - name: "address_line_1"
+        type: "STRING"
+        role: "address_line_1"
+      - name: "city"
+        type: "STRING"
+        role: "city"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip_code"
+        type: "STRING"
+        role: "zip"
+      - name: "modified_at"
+        type: "TIMESTAMP"
+
+# ---------------------------------------------------------------------------
+# Feature engineering with compound detection
+# ---------------------------------------------------------------------------
+feature_engineering:
+
+  # -- Compound detection (key new feature) ---------------------------------
+  # When enabled, auto-injects is_compound_name and compound_pattern columns.
+  # action: "flag" just adds detection columns (no row splitting).
+  compound_detection:
+    enabled: true
+    name_column: "first_name"
+    last_name_column: "last_name"
+    action: "flag"
+    flag_column: "is_compound_name"
+
+  # -- Name features --------------------------------------------------------
+  name_features:
+    enabled: true
+    features:
+      - name: "first_name_clean"
+        function: "name_clean"
+        input: "first_name"
+      - name: "last_name_clean"
+        function: "name_clean"
+        input: "last_name"
+      - name: "first_name_soundex"
+        function: "soundex"
+        input: "first_name_clean"
+      - name: "last_name_soundex"
+        function: "soundex"
+        input: "last_name_clean"
+      - name: "first_initial"
+        function: "first_letter"
+        input: "first_name_clean"
+      # Extract individual names from compound records
+      - name: "compound_first_name"
+        function: "extract_compound_first"
+        input: "first_name"
+      - name: "compound_second_name"
+        function: "extract_compound_second"
+        input: "first_name"
+
+  # -- Address features -----------------------------------------------------
+  address_features:
+    enabled: true
+    features:
+      - name: "address_clean"
+        function: "address_standardize"
+        input: "address_line_1"
+      - name: "zip5"
+        function: "left"
+        input: "zip_code"
+        params: { length: 5 }
+
+  # -- Contact features -----------------------------------------------------
+  contact_features:
+    enabled: true
+    features:
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+
+  # -- Blocking keys --------------------------------------------------------
+  blocking_keys:
+    - name: "bk_name_zip"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "zip5"]
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: ["email_clean"]
+    - name: "bk_phone"
+      function: "farm_fingerprint"
+      inputs: ["phone_clean"]
+
+  composite_keys:
+    - name: "ck_name_address"
+      function: "farm_fingerprint_concat"
+      inputs: ["first_name_clean", "last_name_clean", "address_clean", "zip5"]
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+matching_tiers:
+
+  # Tier 1: Exact composite match — excludes compound records entirely
+  - name: "exact_name_address"
+    description: "Exact match on name + address (compounds excluded)"
+    confidence: 1.0
+    blocking:
+      paths:
+        - keys: ["ck_name_address"]
+          candidate_limit: 50
+    comparisons:
+      - left: "ck_name_address"
+        right: "ck_name_address"
+        method: "exact"
+        weight: 10.0
+    threshold:
+      method: "sum"
+      min_score: 10.0
+    # Hard negative: disqualify any pair where either record is compound
+    hard_negatives:
+      - left: "is_compound_name"
+        method: "exact"
+        params: { value: 1 }
+        action: "disqualify"
+
+  # Tier 2: Email match with name confirmation
+  - name: "email_match"
+    description: "Same email + similar last name (compounds penalized)"
+    confidence: 0.95
+    blocking:
+      paths:
+        - keys: ["bk_email"]
+          candidate_limit: 50
+    comparisons:
+      - left: "email_clean"
+        right: "email_clean"
+        method: "exact_case_insensitive"
+        weight: 5.0
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein"
+        params: { max_distance: 2 }
+        weight: 3.0
+    threshold:
+      method: "sum"
+      min_score: 8.0
+    # Soft signal: penalize compound pairs (less certain match)
+    soft_signals:
+      - left: "is_compound_name"
+        method: "exact"
+        params: { value: 1 }
+        bonus: -2.0
+
+  # Tier 3: Fuzzy name matching — compounds heavily penalized
+  - name: "fuzzy_name"
+    description: "Fuzzy name + address (compounds penalized)"
+    blocking:
+      paths:
+        - keys: ["bk_name_zip"]
+          candidate_limit: 200
+    comparisons:
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "jaro_winkler"
+        params: { threshold: 0.85 }
+        weight: 3.0
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.8 }
+        weight: 3.0
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.75 }
+        weight: 2.0
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 2.0
+    threshold:
+      method: "sum"
+      min_score: 8.0
+    hard_negatives:
+      - left: "first_initial"
+        method: "different"
+        action: "penalize"
+        penalty: -2.0
+    soft_signals:
+      # Strong penalty for compound records in fuzzy tier
+      - left: "is_compound_name"
+        method: "exact"
+        params: { value: 1 }
+        bonus: -3.0
+      - left: "phone_clean"
+        method: "exact"
+        bonus: 2.0
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+    max_iterations: 15
+  canonical_selection:
+    method: "completeness"
+  output:
+    include_match_metadata: true
+    entity_id_prefix: "CUST"

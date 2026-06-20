@@ -1,0 +1,102 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bq-entity-resolution"
+version = "0.2.0"
+description = "Configurable multi-tier entity resolution pipeline for BigQuery"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [
+    {name = "bq-entity-resolution contributors"},
+]
+keywords = [
+    "bigquery",
+    "entity-resolution",
+    "record-linkage",
+    "deduplication",
+    "data-matching",
+    "fellegi-sunter",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Scientific/Engineering :: Information Analysis",
+    "Typing :: Typed",
+]
+dependencies = [
+    "google-cloud-bigquery>=3.20.0,<4.0.0",
+    "google-cloud-bigquery-storage>=2.24.0,<3.0.0",
+    "pydantic>=2.5.0,<3.0.0",
+    "pyyaml>=6.0,<7.0",
+    "click>=8.1.0,<9.0.0",
+    "structlog>=24.0.0,<26.0.0",
+    "sqlglot>=23.0.0,<26.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=4.0",
+    "ruff>=0.3.0",
+    "mypy>=1.8",
+    "pip-audit>=2.7.0",
+    "types-PyYAML>=6.0",
+]
+local = [
+    "duckdb>=0.10.0,<2.0.0",
+    "metaphone>=0.6,<1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/bq-entity-resolution/bq-entity-resolution"
+Repository = "https://github.com/bq-entity-resolution/bq-entity-resolution"
+Documentation = "https://github.com/bq-entity-resolution/bq-entity-resolution#readme"
+Issues = "https://github.com/bq-entity-resolution/bq-entity-resolution/issues"
+Changelog = "https://github.com/bq-entity-resolution/bq-entity-resolution/blob/main/CHANGELOG.md"
+
+[project.scripts]
+bq-er = "bq_entity_resolution.cli.main:cli"
+
+# Entry point groups for plugin discovery.
+# External packages can register custom feature/comparison functions by
+# adding entry points in their own pyproject.toml:
+#
+#   [project.entry-points."bq_er.features"]
+#   my_pkg = "my_pkg.features"     # module with @register_feature decorators
+#
+#   [project.entry-points."bq_er.comparisons"]
+#   my_pkg = "my_pkg.comparisons"  # module with @register_comparison decorators
+[project.entry-points."bq_er.features"]
+[project.entry-points."bq_er.comparisons"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"bq_entity_resolution" = ["py.typed"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

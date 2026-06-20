@@ -1,0 +1,43 @@
+version: "3.8"
+
+services:
+  entity-resolution:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bq-entity-resolution:latest
+    environment:
+      - BQ_PROJECT=${BQ_PROJECT}
+      - GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/sa-key.json
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./config/user:/app/config/user:ro
+      - ./secrets:/app/secrets:ro
+    command: >
+      run
+      --config /app/config/user/config.yml
+      --defaults /app/config/defaults.yml
+      --log-level ${LOG_LEVEL:-INFO}
+      --log-format json
+
+  validate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bq-entity-resolution:latest
+    environment:
+      - BQ_PROJECT=${BQ_PROJECT:-placeholder}
+    volumes:
+      - ./config/user:/app/config/user:ro
+    command: validate --config /app/config/user/config.yml
+    profiles:
+      - tools
+
+  bq-emulator:
+    image: ghcr.io/goccy/bigquery-emulator:latest
+    ports:
+      - "9050:9050"
+      - "9060:9060"
+    command: --project=test-project --dataset=test_dataset
+    profiles:
+      - test

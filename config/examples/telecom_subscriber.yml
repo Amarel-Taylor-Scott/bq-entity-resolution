@@ -1,0 +1,367 @@
+# Telecom Subscriber Identity Matching
+# ===========================================================================
+#
+# Resolves subscriber identities across CRM and billing systems in a telecom
+# environment. Telecommunications companies frequently maintain parallel
+# records in customer relationship management (CRM), billing/OSS, and
+# provisioning systems. A single subscriber may appear under slightly
+# different names, addresses, or contact details across these systems --
+# leading to fragmented customer views, duplicate marketing campaigns,
+# and inaccurate churn predictions.
+#
+# This pipeline matches subscribers using two tiers:
+#   1. exact_id   -- Deterministic match on subscriber_id, IMSI, or MSISDN
+#   2. fuzzy      -- Fuzzy name + address + phone for records missing IDs
+#
+# Key identifiers:
+#   subscriber_id  -- Internal account/subscriber identifier
+#   imsi           -- International Mobile Subscriber Identity (SIM card ID)
+#   msisdn         -- Mobile Station ISDN Number (phone number on the network)
+#
+# Usage:
+#   bq-er validate --config config/examples/telecom_subscriber.yml
+#   bq-er preview-sql --config config/examples/telecom_subscriber.yml --tier exact_id --stage all
+#   bq-er run --config config/examples/telecom_subscriber.yml --dry-run
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Project: dataset routing for bronze / silver / gold layers
+# ---------------------------------------------------------------------------
+project:
+  name: "telecom_subscriber_dedup"
+  description: "Match subscriber identities across CRM and billing systems"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "telecom_bronze"    # Staging tables (raw ingestion)
+  bq_dataset_silver: "telecom_silver"    # Feature, candidate, and match tables
+  bq_dataset_gold: "telecom_gold"        # Final resolved subscriber master
+  bq_location: "US"
+  watermark_dataset: "telecom_meta"      # Watermark + checkpoint persistence
+
+# ---------------------------------------------------------------------------
+# Sources: subscriber records from CRM and billing
+# ---------------------------------------------------------------------------
+sources:
+  - name: "subscribers"
+    table: "${BQ_PROJECT}.raw_telecom.subscriber_records"
+    unique_key: "record_id"
+    updated_at: "last_updated"
+    columns:
+      - name: "record_id"
+        type: "STRING"
+      - name: "subscriber_id"
+        type: "STRING"
+        # Internal subscriber/account identifier. May differ across CRM
+        # and billing systems for the same person. When present and matching,
+        # this is a high-confidence deterministic link.
+      - name: "imsi"
+        type: "STRING"
+        # International Mobile Subscriber Identity -- 15-digit number stored
+        # on the SIM card. Uniquely identifies a mobile subscription on the
+        # network. Critical for matching across provisioning systems.
+      - name: "msisdn"
+        type: "STRING"
+        role: "phone"
+        # Mobile number (e.g., +1-555-867-5309). Also known as MDN (Mobile
+        # Directory Number). This is the subscriber's phone number and serves
+        # as both a matching field and a blocking key.
+      - name: "first_name"
+        type: "STRING"
+        role: "first_name"
+      - name: "last_name"
+        type: "STRING"
+        role: "last_name"
+      - name: "address"
+        type: "STRING"
+        role: "address_line_1"
+      - name: "city"
+        type: "STRING"
+        role: "city"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip"
+        type: "STRING"
+        role: "zip"
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+        # Contact phone number (may differ from MSISDN -- e.g., a landline
+        # or alternate mobile number used for account verification).
+      - name: "email"
+        type: "STRING"
+        role: "email"
+      - name: "source_system"
+        type: "STRING"
+        # Identifies the originating system (CRM, Billing, Provisioning).
+      - name: "last_updated"
+        type: "TIMESTAMP"
+    passthrough_columns:
+      - "source_system"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+feature_engineering:
+
+  # --- Name features ---
+  name_features:
+    enabled: true
+    features:
+      - name: "first_name_clean"
+        function: "name_clean"
+        input: "first_name"
+      - name: "last_name_clean"
+        function: "name_clean"
+        input: "last_name"
+      - name: "first_name_soundex"
+        function: "soundex"
+        input: "first_name_clean"
+      - name: "last_name_soundex"
+        function: "soundex"
+        input: "last_name_clean"
+      - name: "first_initial"
+        function: "first_letter"
+        input: "first_name_clean"
+
+  # --- Address features ---
+  address_features:
+    enabled: true
+    features:
+      - name: "address_clean"
+        function: "address_standardize"
+        input: "address"
+      - name: "city_clean"
+        function: "upper_trim"
+        input: "city"
+      - name: "state_clean"
+        function: "upper_trim"
+        input: "state"
+      - name: "zip5"
+        function: "left"
+        input: "zip"
+        params: { length: 5 }
+
+  # --- Contact and identifier features ---
+  contact_features:
+    enabled: true
+    features:
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+      - name: "msisdn_clean"
+        function: "phone_standardize"
+        input: "msisdn"
+        # MSISDN standardized to digits-only for exact matching.
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+      - name: "subscriber_id_clean"
+        function: "upper_trim"
+        input: "subscriber_id"
+      - name: "imsi_clean"
+        function: "upper_trim"
+        input: "imsi"
+
+  # --- Blocking keys ---
+  # Telecom blocking strategy:
+  #   bk_subscriber_id -- Direct ID-based blocking (strongest signal)
+  #   bk_imsi          -- SIM card identity blocking
+  #   bk_msisdn        -- Mobile number blocking
+  #   bk_name_zip      -- Last name + ZIP for fuzzy matching
+  #   bk_phone         -- Contact phone for name-change scenarios
+  #   bk_email         -- Email for cross-system linkage
+  blocking_keys:
+    - name: "bk_subscriber_id"
+      function: "farm_fingerprint"
+      inputs: ["subscriber_id_clean"]
+      # Subscriber ID is the primary account identifier.
+
+    - name: "bk_imsi"
+      function: "farm_fingerprint"
+      inputs: ["imsi_clean"]
+      # IMSI is globally unique per SIM card.
+
+    - name: "bk_msisdn"
+      function: "farm_fingerprint"
+      inputs: ["msisdn_clean"]
+      # Mobile number -- near-unique for active subscribers.
+
+    - name: "bk_name_zip"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "zip5"]
+      # Phonetic last name + ZIP code for geographic clustering.
+
+    - name: "bk_phone"
+      function: "farm_fingerprint"
+      inputs: ["phone_clean"]
+      # Alternate contact phone.
+
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: ["email_clean"]
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+matching_tiers:
+
+  # -------------------------------------------------------------------------
+  # Tier 1: Exact ID match (subscriber_id, IMSI, or MSISDN)
+  # -------------------------------------------------------------------------
+  # Deterministic match on telecom-specific identifiers. When subscriber_id,
+  # IMSI, or MSISDN matches exactly, the records refer to the same account.
+  # Name comparison provides a safety check against ID recycling.
+  - name: "exact_id"
+    description: "Deterministic match on subscriber ID, IMSI, or MSISDN"
+    confidence: 1.0
+    blocking:
+      paths:
+        - keys: ["bk_subscriber_id"]
+          candidate_limit: 50
+        - keys: ["bk_imsi"]
+          candidate_limit: 50
+        - keys: ["bk_msisdn"]
+          candidate_limit: 50
+    comparisons:
+      - left: "subscriber_id_clean"
+        right: "subscriber_id_clean"
+        method: "exact"
+        weight: 6.0
+        # Subscriber ID exact match -- strongest deterministic signal.
+
+      - left: "imsi_clean"
+        right: "imsi_clean"
+        method: "exact"
+        weight: 5.0
+        # IMSI match -- confirms same SIM/subscription.
+
+      - left: "msisdn_clean"
+        right: "msisdn_clean"
+        method: "exact"
+        weight: 4.0
+        # MSISDN match -- same mobile number.
+
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "exact"
+        weight: 2.0
+        # Name confirmation prevents merging after ID reassignment.
+
+    threshold:
+      method: "sum"
+      min_score: 7.0
+      # Any single ID (6, 5, or 4) + name (2) exceeds 7.0.
+      # Two IDs without name also qualify.
+
+    hard_negatives: []
+    soft_signals: []
+
+  # -------------------------------------------------------------------------
+  # Tier 2: Fuzzy name + address + phone matching
+  # -------------------------------------------------------------------------
+  # Catches subscribers missing IDs or with mismatched IDs due to system
+  # migrations, SIM swaps, or number porting. Uses fuzzy name matching,
+  # address similarity, and phone/email as supporting signals.
+  - name: "fuzzy"
+    description: "Fuzzy name + address + phone for records without matching IDs"
+    confidence: 0.88
+    blocking:
+      paths:
+        - keys: ["bk_name_zip"]
+          candidate_limit: 200
+        - keys: ["bk_phone"]
+          candidate_limit: 150
+        - keys: ["bk_email"]
+          candidate_limit: 100
+    comparisons:
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.80 }
+        weight: 2.5
+        # Fuzzy first name -- handles typos and abbreviations.
+
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.80 }
+        weight: 3.0
+        # Fuzzy last name -- allows minor spelling differences.
+
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.70 }
+        weight: 2.0
+        # Address similarity with loose threshold for formatting differences.
+
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 1.5
+        # ZIP code confirms geographic proximity.
+
+      - left: "phone_clean"
+        right: "phone_clean"
+        method: "exact"
+        weight: 2.5
+        # Contact phone match -- strong supporting signal.
+
+    threshold:
+      method: "sum"
+      min_score: 8.0
+      # Requires strong name match (5.5) + address/zip (3.5) or phone (2.5).
+
+    hard_negatives:
+      - left: "first_initial"
+        method: "different"
+        action: "penalize"
+        penalty: -2.0
+        # Different first initials are a moderate red flag.
+
+    soft_signals:
+      - left: "email_clean"
+        method: "exact_case_insensitive"
+        bonus: 2.0
+        # Matching email provides additional confirmation.
+
+      - left: "msisdn_clean"
+        method: "exact"
+        bonus: 3.0
+        # MSISDN match in the fuzzy tier is a very strong bonus.
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+    max_iterations: 15
+  canonical_selection:
+    method: "completeness"
+  output:
+    include_match_metadata: true
+    include_passthrough: true
+    entity_id_prefix: "SUB"
+    # Resolved subscriber IDs: SUB_000001, SUB_000002, etc.
+
+# ---------------------------------------------------------------------------
+# Incremental processing
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: true
+  grace_period_hours: 12
+  cursor_columns: ["last_updated"]
+  batch_size: 1000000
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  log_level: "INFO"
+  log_format: "json"
+  metrics:
+    enabled: true
+    destination: "bigquery"

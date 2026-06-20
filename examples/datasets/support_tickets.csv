@@ -1,0 +1,9 @@
+id,first_name,last_name,email,phone,city,state,zip,updated_at
+1,John,Smith,john.smith@gmail.com,(555) 123-4567,Springfield,IL,62701,2024-02-01 00:00:00
+2,Jane,Doe,jane.doe@yahoo.com,555.987.6543,Porland,OR,97201,2024-02-02 00:00:00
+3,Mari,Garcia,maria.garcia@outlook.com,555-321-0987,Miami,FL,33101,2024-02-03 00:00:00
+4,Dave,Lee,david.lee@techco.com,(555) 555-6666,San Jose,CA,95101,2024-02-04 00:00:00
+5,Sarah,Brown,s.brown@email.com,(555) 111-2222,Seattle,WA,98101,2024-02-05 00:00:00
+6,Rachel,Kim,rachel.kim@web.com,555-876-5432,New York,NY,10001,2024-02-06 00:00:00
+7,Daniel,Ortiz,d.ortiz@mail.com,555-765-4321,Philadelphia,PA,19101,2024-02-07 00:00:00
+8,Nicole,Foster,nicole.f@gmail.com,555-654-3210,Charlotte,NC,28201,2024-02-08 00:00:00

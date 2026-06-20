@@ -1,0 +1,26 @@
+id,full_name,email,phone,address_line_1,address_line_2,city,state,zip,updated_at
+1,Laura Chen,laura.chen@gmail.com,555-301-4400,742 Elm Street,,Springfield,IL,62704,2024-01-01 00:00:00
+2,Laura Chen,lchen@work.com,555-301-4400,742 Elm St,,Springfield,IL,62704-3218,2024-01-02 00:00:00
+3,Laura Chen,laura.chen@gmail.com,555-301-4400,742 Elm Str Apt 2,,Springfield,IL,62704,2024-01-03 00:00:00
+4,Marcus Rivera,marcus.rivera@yahoo.com,555-422-8910,1500 North Oak Avenue,Unit 4B,Portland,OR,97209,2024-01-01 00:00:00
+5,Marcus Rivera,mrivera@yahoo.com,5554228910,1500 N Oak Ave,Apt 4B,Portland,OR,97209-1122,2024-01-02 00:00:00
+6,Marcus Rivera,marcus.rivera@yahoo.com,555-422-8910,1500 N. Oak Ave,,Portland,OR,97209,2024-01-03 00:00:00
+7,Danielle Park,dpark@outlook.com,555-610-3377,308 Willow Road,,Saint Louis,MO,63101,2024-01-01 00:00:00
+8,Danielle Park,danielle.park@outlook.com,555-610-3377,308 Willow Rd,,St. Louis,MO,63101-4500,2024-01-02 00:00:00
+9,Danielle Park,dpark@outlook.com,5556103377,308 Willow Rd,,St Louis,MO,63101,2024-01-03 00:00:00
+10,Kevin Okafor,kevin.okafor@proton.me,555-789-2001,215 East Maple Drive,# 12,Austin,TX,78702,2024-01-01 00:00:00
+11,Kevin Okafor,kokafor@proton.me,555-789-2001,215 E Maple Dr,Apt 12,Austin,TX,78702-5500,2024-01-02 00:00:00
+12,Kevin Okafor,kevin.okafor@proton.me,5557892001,215 E. Maple Dr,Unit 12,Austin,TX,78702,2024-01-03 00:00:00
+13,Samantha Webb,swebb@live.com,555-555-6789,44 Crescent Lane,,Denver,CO,80203,2024-01-01 00:00:00
+14,Samantha Webb,samantha.webb@live.com,555-555-6789,44 Crescent Ln,,Denver,CO,80203-1020,2024-01-02 00:00:00
+15,Tyler Brooks,tyler.brooks@gmail.com,555-900-1234,1021 Sunset Boulevard,,Seattle,WA,98101,2024-01-01 00:00:00
+16,Tyler Brooks,tbrooks@gmail.com,5559001234,1021 Sunset Blvd,,Seattle,WA,98101-3300,2024-01-02 00:00:00
+17,Tyler Brooks,tyler.brooks@gmail.com,555-900-1234,1021 Sunset Blvd Ste 200,,Seattle,WA,98101,2024-01-03 00:00:00
+18,Priya Nair,priya.nair@icloud.com,555-333-0088,670 West Park Avenue,,Chicago,IL,60614,2024-01-01 00:00:00
+19,Priya Nair,pnair@icloud.com,555-333-0088,670 W Park Ave,,Chicago,IL,60614-2200,2024-01-02 00:00:00
+20,Priya Nair,priya.nair@icloud.com,5553330088,670 W. Park Ave,,Chicago,IL,60614,2024-01-03 00:00:00
+21,Jason Howell,jason.howell@corp.net,555-444-7766,89 Birch Road,Apt 3A,Boston,MA,02134,2024-01-01 00:00:00
+22,Jason Howell,jhowell@corp.net,555-444-7766,89 Birch Rd,Unit 3A,Boston,MA,02134-1010,2024-01-02 00:00:00
+23,Amy Howell,amy.howell@corp.net,555-444-7799,89 Birch Road,Apt 3A,Boston,MA,02134,2024-01-01 00:00:00
+24,Amy Howell,ahowell@gmail.com,555-444-7799,89 Birch Rd,Unit 3A,Boston,MA,02134,2024-01-02 00:00:00
+25,Carlos Mendez,carlos.mendez@mail.com,555-212-5544,502 North Highland Ave,,Miami,FL,33130,2024-01-01 00:00:00

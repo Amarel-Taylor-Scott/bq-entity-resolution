@@ -1,0 +1,26 @@
+id,first_name,last_name,email,phone,address_line_1,city,state,zip,date_of_birth,updated_at
+1,John,Smith,john.smith@gmail.com,555-123-4567,123 Main St,Springfield,IL,62701,1990-01-15,2024-01-01 00:00:00
+2,Jon,Smith,jon.smith@gmail.com,5551234567,123 Main Street,Springfield,IL,62701,1990-01-15,2024-01-02 00:00:00
+3,Jonathan,Smith,jsmith@work.com,555-123-4567,123 Main St Apt 2,Springfield,IL,62701,1990-01-15,2024-01-03 00:00:00
+4,John,Smyth,john.smith@gmail.com,,123 Main St,Springfield,IL,62701,1990-01-15,2024-01-04 00:00:00
+5,Jane,Doe,jane.doe@yahoo.com,555-987-6543,456 Oak Ave,Portland,OR,97201,1985-06-20,2024-01-01 00:00:00
+6,Jane,Williams-Doe,janedoe@yahoo.com,555-987-6543,456 Oak Avenue,Portland,OR,97201,1985-06-20,2024-01-02 00:00:00
+7,J,Doe,jane.d@yahoo.com,5559876543,456 Oak Ave,Portland,OR,97201,1985-06-20,2024-01-03 00:00:00
+8,Robert,Johnson,bob.johnson@hotmail.com,555-456-7890,789 Pine Rd,Austin,TX,78701,1978-11-03,2024-01-01 00:00:00
+9,Bob,Johnson,robert.johnson@hotmail.com,555-456-7890,789 Pine Road,Austin,TX,78701,1978-11-03,2024-01-02 00:00:00
+10,Robt,Johnson,bob.j@hotmail.com,,789 Pine Rd,Austin,TX,78701,1978-11-03,2024-01-03 00:00:00
+11,Maria,Garcia,maria.garcia@outlook.com,555-321-0987,321 Elm St,Miami,FL,33101,1995-03-28,2024-01-01 00:00:00
+12,Mari,Garcia,mariagarcia@outlook.com,555-321-0987,321 Elm Street,Miami,FL,33101,1995-03-28,2024-01-02 00:00:00
+13,Mary,Garcia,m.garcia@outlook.com,5553210987,321 Elm St,Miami,FL,33101,1995-03-28,2024-01-03 00:00:00
+14,James,Williams,james.w@gmail.com,555-654-3210,100 Cedar Ln,Denver,CO,80201,1988-09-12,2024-01-01 00:00:00
+15,Jim,Williams,jwilliams@gmail.com,555-654-3210,100 Cedar Lane,Denver,CO,80201,1988-09-12,2024-01-02 00:00:00
+16,James,Wiliams,james.w@gmail.com,,100 Cedar Ln,Denver,CO,80201,1988-09-12,2024-01-03 00:00:00
+17,Sarah,Brown,sarah.brown@email.com,555-111-2222,200 Maple Dr,Seattle,WA,98101,1992-07-04,2024-01-01 00:00:00
+18,Sara,Brown,sarahbrown@email.com,555-111-2222,200 Maple Drive,Seattle,WA,98101,1992-07-04,2024-01-02 00:00:00
+19,Michael,Davis,mike.davis@corp.com,555-222-3333,500 Broadway,New York,NY,10001,1983-12-25,2024-01-01 00:00:00
+20,Mike,Davis,michael.davis@corp.com,555-222-3333,500 Broadway Ave,New York,NY,10001,1983-12-25,2024-01-02 00:00:00
+21,William,Anderson,will.anderson@test.com,555-444-5555,77 Lake Shore Dr,Chicago,IL,60601,1975-04-18,2024-01-01 00:00:00
+22,Bill,Anderson,wanderson@test.com,555-444-5555,77 Lakeshore Drive,Chicago,IL,60601,1975-04-18,2024-01-02 00:00:00
+23,Elizabeth,Taylor,liz.taylor@web.com,555-666-7777,300 Park Ave,Boston,MA,02101,1991-02-14,2024-01-01 00:00:00
+24,Liz,Taylor,elizabeth.t@web.com,555-666-7777,300 Park Avenue,Boston,MA,02101,1991-02-14,2024-01-02 00:00:00
+25,Patricia,Martinez,pat.martinez@live.com,555-888-9999,45 River Rd,Phoenix,AZ,85001,1968-08-30,2024-01-01 00:00:00

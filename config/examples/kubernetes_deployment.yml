@@ -1,0 +1,191 @@
+# Kubernetes Deployment Example
+#
+# Demonstrates production deployment settings for running
+# bq-entity-resolution on Kubernetes pods executing BigQuery jobs.
+#
+# Features shown:
+# - Health probe for K8s liveness/readiness checks
+# - Distributed locking for concurrent pod safety
+# - Graceful shutdown (SIGTERM job cancellation)
+# - Query timeout and cost ceiling configuration
+# - Incremental drain mode for batch processing
+#
+# Prerequisites:
+# - GKE with Workload Identity or service account key
+# - BigQuery datasets: er_bronze, er_silver, er_gold, er_meta
+# - Set BQ_PROJECT environment variable
+#
+# K8s pod spec:
+#   livenessProbe:
+#     exec:
+#       command: [test, -f, /tmp/pipeline_healthy]
+#     initialDelaySeconds: 60
+#     periodSeconds: 15
+#   terminationGracePeriodSeconds: 35
+
+version: "1.0"
+
+project:
+  name: "customer_dedup_prod"
+  description: "Production customer deduplication with K8s deployment"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "er_bronze"
+  bq_dataset_silver: "er_silver"
+  bq_dataset_gold: "er_gold"
+  watermark_dataset: "er_meta"
+
+# ---------------------------------------------------------------------------
+# Deployment settings (K8s-specific)
+# ---------------------------------------------------------------------------
+deployment:
+  # File-based health probe for K8s liveness checks.
+  # The pipeline writes a JSON heartbeat file after each stage.
+  # Configure a K8s exec probe: [test, -f, /tmp/pipeline_healthy]
+  health_probe:
+    enabled: true
+    path: "/tmp/pipeline_healthy"
+
+  # Distributed lock prevents concurrent pods from running the
+  # same pipeline config simultaneously. Uses a BigQuery table
+  # (er_meta.pipeline_locks) with TTL-based expiry.
+  # If a pod dies, the lock expires after ttl_minutes.
+  distributed_lock:
+    enabled: true
+    lock_table: "pipeline_locks"     # Created in watermark_dataset
+    ttl_minutes: 60                  # Lock expiry (safety net for crashed pods)
+    retry_seconds: 15                # Wait between lock attempts
+    max_wait_seconds: 600            # Give up after 10 minutes
+
+  # SIGTERM handler cancels in-flight BigQuery jobs when K8s
+  # terminates the pod. Set grace_period_seconds < K8s
+  # terminationGracePeriodSeconds (default 30s).
+  graceful_shutdown:
+    enabled: true
+    grace_period_seconds: 25
+    cancel_running_jobs: true
+
+# ---------------------------------------------------------------------------
+# Execution controls
+# ---------------------------------------------------------------------------
+execution:
+  allow_udfs: false                  # Avoid JS UDFs in restricted environments
+  query_timeout_seconds: 1800        # 30 min per query (large tables)
+
+  # Pipeline-level cost ceiling (on-demand pricing only).
+  # Leave unset for flat-rate/reservation pricing.
+  # max_cost_bytes: 100000000000     # 100 GB total
+
+# ---------------------------------------------------------------------------
+# Scale optimizations
+# ---------------------------------------------------------------------------
+scale:
+  # Per-query cost cap (on-demand pricing only).
+  # Leave unset for flat-rate/reservation pricing.
+  # max_bytes_billed: 10000000000    # 10 GB per query
+
+  staging_partition_by: "DATE(source_updated_at)"
+  staging_clustering: [entity_uid, source_name]
+  matches_clustering: [l_entity_uid, r_entity_uid]
+  checkpoint_enabled: true
+
+# ---------------------------------------------------------------------------
+# Incremental processing with drain mode
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: true
+  cursor_columns: [updated_at]
+  cursor_mode: ordered
+  batch_size: 2_000_000
+  drain_mode: true                   # Auto-loop until all records consumed
+  drain_max_iterations: 50           # Safety cap
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  log_level: "INFO"
+  log_format: "json"                 # JSON for K8s log aggregation
+  metrics:
+    enabled: true
+    destination: "bigquery"
+  cluster_quality:
+    enabled: true
+    persist_to_table: true
+    alert_max_cluster_size: 50
+    abort_on_explosion: true          # Hard abort on suspicious clusters
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+sources:
+  - name: "customers"
+    table: "${BQ_PROJECT}.raw.customers"
+    unique_key: "customer_id"
+    updated_at: "updated_at"
+    columns:
+      - name: "customer_id"
+      - name: "first_name"
+        role: "first_name"
+      - name: "last_name"
+        role: "last_name"
+      - name: "email"
+        role: "email"
+      - name: "phone"
+        role: "phone"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+feature_engineering:
+  name_features:
+    features:
+      - name: "first_name_clean"
+        function: "name_clean"
+        input: "first_name"
+      - name: "last_name_clean"
+        function: "name_clean"
+        input: "last_name"
+  contact_features:
+    features:
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+  blocking_keys:
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: [email_clean]
+    - name: "bk_last_phone"
+      function: "farm_fingerprint_concat"
+      inputs: [last_name_clean, phone_clean]
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+matching_tiers:
+  - name: "exact"
+    blocking:
+      paths:
+        - keys: [bk_email]
+        - keys: [bk_last_phone]
+    comparisons:
+      - left: "email_clean"
+        right: "email_clean"
+        method: "exact"
+        weight: 5.0
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "exact"
+        weight: 3.0
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "exact"
+        weight: 3.0
+      - left: "phone_clean"
+        right: "phone_clean"
+        method: "exact"
+        weight: 4.0
+    threshold:
+      min_score: 8.0

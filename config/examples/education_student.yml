@@ -1,0 +1,376 @@
+# Student Record Matching Across Institutions
+# ===========================================================================
+#
+# Matches student records across educational institutions, state longitudinal
+# data systems (SLDS), and enrollment platforms. Students transfer between
+# schools, enroll in dual-credit programs, and appear in multiple district
+# or state databases. Accurate student identity resolution is essential for
+# tracking academic progress, ensuring accurate funding allocations (e.g.,
+# Title I, IDEA), and producing reliable graduation/completion metrics.
+#
+# Key identifiers:
+#   student_id        -- State-assigned student identifier (SSID/SASID)
+#   enrollment_id     -- Institution-specific enrollment record ID
+#   date_of_birth     -- Critical anchor for student matching
+#   institution_code  -- School/institution NCES or state code
+#
+# Matching strategy (two tiers):
+#   1. exact   -- Deterministic match on state student ID
+#   2. fuzzy   -- Fuzzy name + date of birth + institution signals
+#
+# Student matching challenges:
+#   - Name changes (adoption, family changes, preferred name vs legal name)
+#   - Data entry errors in birth dates (common in manual enrollment forms)
+#   - Students with common names (Jose Garcia, Maria Rodriguez) need DOB
+#     to disambiguate
+#   - Same student may appear with different IDs across districts
+#
+# Usage:
+#   bq-er validate --config config/examples/education_student.yml
+#   bq-er preview-sql --config config/examples/education_student.yml --tier exact --stage all
+#   bq-er run --config config/examples/education_student.yml --dry-run
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Project: dataset routing
+# ---------------------------------------------------------------------------
+project:
+  name: "education_student_match"
+  description: "Match student records across institutions and state data systems"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "student_bronze"
+  bq_dataset_silver: "student_silver"
+  bq_dataset_gold: "student_gold"
+  bq_location: "US"
+  watermark_dataset: "student_meta"
+
+# ---------------------------------------------------------------------------
+# Source: student records from state longitudinal data system
+# ---------------------------------------------------------------------------
+sources:
+  - name: "students"
+    table: "${BQ_PROJECT}.raw_education.student_records"
+    unique_key: "record_id"
+    updated_at: "last_updated"
+    columns:
+      - name: "record_id"
+        type: "STRING"
+      - name: "student_id"
+        type: "STRING"
+        # State Student Identifier (SSID/SASID). Assigned by the state
+        # education agency. Should be unique per student statewide, but
+        # students transferring from out-of-state or new enrollees may
+        # not yet have one. Some districts assign local IDs that differ
+        # from the state SSID.
+      - name: "enrollment_id"
+        type: "STRING"
+        # Institution-specific enrollment record ID. Unique within a
+        # school but not across institutions. Useful for dedup within
+        # a single school's duplicate registrations.
+      - name: "first_name"
+        type: "STRING"
+        role: "first_name"
+      - name: "last_name"
+        type: "STRING"
+        role: "last_name"
+      - name: "date_of_birth"
+        type: "DATE"
+        # Date of birth is the strongest non-ID matching signal for
+        # students. Combined with name, it disambiguates common names.
+      - name: "email"
+        type: "STRING"
+        role: "email"
+        # Student or guardian email. Older students may have personal
+        # email; younger students typically use school-assigned email
+        # or guardian contact.
+      - name: "institution_code"
+        type: "STRING"
+        # NCES school code or state-assigned institution identifier.
+        # Useful as a soft signal -- students at the same institution
+        # with matching name+DOB are very likely the same person.
+      - name: "district_code"
+        type: "STRING"
+        # School district identifier. Students typically stay within
+        # the same district unless they transfer.
+      - name: "source_system"
+        type: "STRING"
+        # Originating system: STATE_SLDS, DISTRICT_SIS, ENROLLMENT_PLATFORM.
+      - name: "last_updated"
+        type: "TIMESTAMP"
+    passthrough_columns:
+      - "source_system"
+      - "institution_code"
+      - "district_code"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+feature_engineering:
+
+  # --- Name features ---
+  name_features:
+    enabled: true
+    features:
+      - name: "first_name_clean"
+        function: "name_clean"
+        input: "first_name"
+      - name: "last_name_clean"
+        function: "name_clean"
+        input: "last_name"
+      - name: "first_name_soundex"
+        function: "soundex"
+        input: "first_name_clean"
+      - name: "last_name_soundex"
+        function: "soundex"
+        input: "last_name_clean"
+      - name: "first_initial"
+        function: "first_letter"
+        input: "first_name_clean"
+      - name: "nickname_key"
+        function: "nickname_match_key"
+        input: "first_name_clean"
+        # Maps common student nicknames: "Billy" -> "WILLIAM",
+        # "Katie" -> "KATHERINE", "Danny" -> "DANIEL".
+
+  # --- Date of birth features ---
+  extra_groups:
+    dob_features:
+      enabled: true
+      features:
+        - name: "birth_year"
+          function: "dob_year"
+          input: "date_of_birth"
+          # Birth year -- combined with name for blocking. Students born
+          # in the same year with similar names are strong candidates.
+        - name: "dob_mmdd"
+          function: "dob_mmdd"
+          input: "date_of_birth"
+          # Month+day from DOB -- catches year-transposition errors
+          # (e.g., 2008 vs 2009 for students near a cutoff date).
+
+  # --- Contact features ---
+  contact_features:
+    enabled: true
+    features:
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+      - name: "student_id_clean"
+        function: "upper_trim"
+        input: "student_id"
+      - name: "institution_clean"
+        function: "upper_trim"
+        input: "institution_code"
+
+  # --- Blocking keys ---
+  # Student blocking strategy:
+  #   bk_student_id    -- State student ID (strongest deterministic key)
+  #   bk_dob_name      -- Birth year + last name phonetic (primary fuzzy)
+  #   bk_name_initial  -- Full name phonetic + first initial (broad recall)
+  #   bk_email         -- Email address (cross-institution link)
+  blocking_keys:
+    - name: "bk_student_id"
+      function: "farm_fingerprint"
+      inputs: ["student_id_clean"]
+      # State student ID -- the gold standard for student identification.
+
+    - name: "bk_dob_name"
+      function: "farm_fingerprint_concat"
+      inputs: ["birth_year", "last_name_soundex"]
+      # Birth year + phonetic last name. Effective blocking key:
+      # ~4M births/year in the US, narrowed by surname phonetics to
+      # ~100-500 students per bucket in a typical state SLDS.
+
+    - name: "bk_name_initial"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "first_initial"]
+      # Broader recall key for cases where DOB is missing or wrong.
+
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: ["email_clean"]
+      # Email-based blocking for older students with personal email.
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+matching_tiers:
+
+  # -------------------------------------------------------------------------
+  # Tier 1: Exact match on state student ID
+  # -------------------------------------------------------------------------
+  # Deterministic match on state-assigned student identifier. When student
+  # IDs match exactly, the records refer to the same student. Name and DOB
+  # comparisons provide safety checks against ID reassignment or data entry
+  # errors in the student ID field.
+  - name: "exact"
+    description: "Deterministic match on state student ID with name verification"
+    confidence: 1.0
+    blocking:
+      paths:
+        - keys: ["bk_student_id"]
+          candidate_limit: 50
+    comparisons:
+      - left: "student_id_clean"
+        right: "student_id_clean"
+        method: "exact"
+        weight: 7.0
+        # State student ID exact match -- definitive identifier.
+
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein"
+        params: { max_distance: 2 }
+        weight: 2.0
+        # Name verification with minor typo tolerance.
+        # Catches "JOHNSON" vs "JOHNSEN" while still confirming identity.
+
+      - left: "date_of_birth"
+        right: "date_of_birth"
+        method: "exact"
+        weight: 3.0
+        # DOB exact match -- very strong identity confirmation for students.
+
+    threshold:
+      method: "sum"
+      min_score: 9.0
+      # Student ID (7) + name (2) = 9, or student ID (7) + DOB (3) = 10.
+
+    hard_negatives:
+      - left: "date_of_birth"
+        method: "different"
+        action: "penalize"
+        penalty: -4.0
+        # Different DOB on same student ID is a strong warning sign.
+        # Penalize but do not disqualify -- DOB entry errors do occur.
+
+    soft_signals: []
+
+  # -------------------------------------------------------------------------
+  # Tier 2: Fuzzy name + date of birth matching
+  # -------------------------------------------------------------------------
+  # Catches students without state IDs (new enrollees, out-of-state
+  # transfers) or with mismatched IDs across districts. DOB is the
+  # strongest non-ID signal for student matching -- combined with name,
+  # it provides high confidence for common-name disambiguation.
+  - name: "fuzzy"
+    description: "Fuzzy name + DOB matching for students without matching IDs"
+    confidence: 0.90
+    blocking:
+      paths:
+        - keys: ["bk_dob_name"]
+          candidate_limit: 200
+        - keys: ["bk_name_initial"]
+          candidate_limit: 150
+        - keys: ["bk_email"]
+          candidate_limit: 100
+    comparisons:
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.80 }
+        weight: 2.5
+        # Fuzzy first name -- handles "Christopher" vs "Chris",
+        # "Elizabeth" vs "Liz", and data entry typos.
+
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.80 }
+        weight: 3.0
+        # Fuzzy last name -- handles hyphenation changes and typos.
+        # "SMITH-JONES" vs "SMITHJONES" after normalization.
+
+      - left: "date_of_birth"
+        right: "date_of_birth"
+        method: "date_within_days"
+        params: { days: 5 }
+        weight: 4.0
+        # DOB within 5 days. Tighter window than healthcare because
+        # student DOBs are typically from official documents (birth
+        # certificate). The 5-day buffer handles timezone-related
+        # date shifts and month/day transposition within a small window.
+
+    threshold:
+      method: "sum"
+      min_score: 8.5
+      # Name (5.5) + DOB (4.0) = 9.5 -- strong match.
+      # Requires fuzzy name match + DOB proximity.
+
+    hard_negatives:
+      - left: "date_of_birth"
+        method: "different"
+        action: "penalize"
+        penalty: -5.0
+        # Completely different DOB is a very strong contra-indicator
+        # for student matching. Two students with the same name but
+        # born in different years are almost certainly different people.
+
+      - left: "first_initial"
+        method: "different"
+        action: "penalize"
+        penalty: -2.0
+        # Different first initials are a moderate red flag.
+
+    soft_signals:
+      - left: "email_clean"
+        method: "exact_case_insensitive"
+        bonus: 2.0
+        # Email match confirms identity across institutions.
+
+      - left: "institution_clean"
+        method: "exact"
+        bonus: 1.0
+        # Same institution -- students with matching name+DOB at the
+        # same school are very likely duplicates from re-enrollment.
+
+      - left: "nickname_key"
+        method: "exact"
+        bonus: 1.5
+        # Nickname canonical form match.
+
+      - left: "dob_mmdd"
+        method: "exact"
+        bonus: 0.5
+        # Month+day match when full DOB does not match -- catches
+        # year-entry errors (e.g., 2007 vs 2008 near enrollment cutoff).
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+    max_iterations: 15
+  canonical_selection:
+    method: "completeness"
+    # Most complete record becomes the canonical student entry.
+    # State SLDS records typically have the most fields populated.
+  output:
+    include_match_metadata: true
+    include_passthrough: true
+    entity_id_prefix: "STU"
+    # Resolved student IDs: STU_000001, STU_000002, etc.
+
+# ---------------------------------------------------------------------------
+# Incremental processing
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: true
+  grace_period_hours: 72
+  cursor_columns: ["last_updated"]
+  batch_size: 500000
+  # Education data updates in waves (enrollment periods, semester starts).
+  # 72-hour grace period accommodates delayed district data submissions.
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  log_level: "INFO"
+  log_format: "json"
+  metrics:
+    enabled: true
+    destination: "bigquery"

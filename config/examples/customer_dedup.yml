@@ -1,0 +1,273 @@
+# ============================================================================
+# Customer Deduplication Configuration
+# ============================================================================
+# A practical example for deduplicating customer records across CRM systems.
+#
+# Strategy overview:
+#   Tier 1 (exact_identity) — High-confidence exact match on composite key
+#   Tier 2 (email_match)    — Email match + fuzzy name verification
+#   Tier 3 (fuzzy_name_address) — Fuzzy name + address + phone signals
+#
+# Expected results:
+#   - Tier 1 catches identical records (data entry duplicates)
+#   - Tier 2 catches same-person with slight name variations
+#   - Tier 3 catches address-based matches with misspellings
+#
+# Tuning tips:
+#   - If too many false positives: raise fuzzy_name_address threshold above 7.0
+#   - If too many false negatives: add more blocking paths or lower thresholds
+#   - For >1M records: add bucket_size_limit to blocking paths
+# ============================================================================
+
+version: "1.0"
+
+project:
+  name: "customer_dedup"
+  description: "Deduplicate customer records across CRM sources"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "dedup_bronze"      # Staging tables (cleaned source data)
+  bq_dataset_silver: "dedup_silver"      # Feature, candidate, and match tables
+  bq_dataset_gold: "dedup_gold"          # Final resolved entities output
+  bq_location: "US"
+  watermark_dataset: "dedup_meta"        # Watermark + checkpoint tables
+
+sources:
+  - name: "crm_customers"
+    table: "${BQ_PROJECT}.raw_crm.customers"
+    unique_key: "customer_id"            # Primary key → used to generate entity_uid
+    updated_at: "modified_date"          # Timestamp → used for incremental processing
+    columns:
+      - name: "customer_id"
+        type: "STRING"
+      - name: "first_name"
+        type: "STRING"
+        role: "first_name"               # Role triggers auto-feature generation
+      - name: "last_name"
+        type: "STRING"
+        role: "last_name"
+      - name: "email"
+        type: "STRING"
+        role: "email"
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+      - name: "address"
+        type: "STRING"
+        role: "address_line_1"
+      - name: "city"
+        type: "STRING"
+        role: "city"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip"
+        type: "STRING"
+        role: "zip"
+      - name: "dob"
+        type: "DATE"
+      - name: "modified_date"
+        type: "TIMESTAMP"
+    passthrough_columns:                 # Columns passed through without features
+      - "source_system"
+      - "account_number"
+
+# ============================================================================
+# Feature Engineering
+# ============================================================================
+# Features are computed in two passes:
+#   Pass 1: Independent features (directly from source columns)
+#   Pass 2: Dependent features (from other features, e.g., soundex of cleaned name)
+#
+# Naming convention: {source_column}_{transform} (e.g., first_name_clean)
+
+feature_engineering:
+  name_features:
+    enabled: true
+    features:
+      - name: "first_name_clean"
+        function: "name_clean"           # Strips whitespace, removes prefixes/suffixes
+        input: "first_name"
+      - name: "last_name_clean"
+        function: "name_clean"
+        input: "last_name"
+      - name: "first_name_soundex"
+        function: "soundex"              # Phonetic encoding for fuzzy blocking
+        input: "first_name_clean"        # Depends on first_name_clean (pass 2)
+      - name: "last_name_soundex"
+        function: "soundex"
+        input: "last_name_clean"
+      - name: "first_initial"
+        function: "first_letter"         # Used as hard negative signal
+        input: "first_name_clean"
+      - name: "first_name_len"
+        function: "char_length"          # Useful for length mismatch detection
+        input: "first_name_clean"
+
+  address_features:
+    enabled: true
+    features:
+      - name: "address_clean"
+        function: "address_standardize"  # Normalizes St→Street, Apt→Apartment, etc.
+        input: "address"
+      - name: "state_clean"
+        function: "upper_trim"
+        input: "state"
+      - name: "city_clean"
+        function: "upper_trim"
+        input: "city"
+      - name: "zip5"
+        function: "left"                 # Extract 5-digit zip from 9-digit
+        input: "zip"
+        params: { length: 5 }
+
+  contact_features:
+    enabled: true
+    features:
+      - name: "phone_clean"
+        function: "phone_standardize"    # Strips formatting: (555) 123-4567 → 5551234567
+        input: "phone"
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+
+  # Blocking keys — used to partition the search space.
+  # Each path generates candidate pairs only within matching buckets.
+  # Strategy: use FARM_FINGERPRINT for INT64 keys (3-5x faster JOINs than STRING).
+  blocking_keys:
+    - name: "bk_last_zip"
+      function: "farm_fingerprint_concat"  # FARM_FINGERPRINT(CONCAT(col1, '||', col2))
+      inputs: ["last_name_soundex", "zip5"]  # Same last name sound + same zip
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: ["email_clean"]              # Same email address
+    - name: "bk_phone"
+      function: "farm_fingerprint"
+      inputs: ["phone_clean"]              # Same phone number
+    - name: "bk_name_state"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "first_name_soundex", "state_clean"]
+
+  # Composite keys — pre-computed fingerprints for deterministic matching.
+  # More selective than blocking keys; used in high-confidence tiers.
+  composite_keys:
+    - name: "ck_full_identity"
+      function: "farm_fingerprint_concat"
+      inputs: ["first_name_clean", "last_name_clean", "address_clean", "zip5"]
+
+# ============================================================================
+# Matching Tiers (cascading, high-confidence → low-confidence)
+# ============================================================================
+# Tiers execute in order. Pairs matched in Tier 1 are excluded from Tier 2+.
+# This prevents duplicate matches and lets you use broader blocking in later tiers.
+
+matching_tiers:
+  # Tier 1: Deterministic exact match
+  # If name + address + zip all match exactly, this is almost certainly the same person.
+  - name: "exact_identity"
+    description: "Exact match on full name + address"
+    confidence: 1.0                      # Confidence score assigned to these matches
+    blocking:
+      paths:
+        - keys: ["ck_full_identity"]
+          candidate_limit: 50            # Max pairs per entity (prevents explosion)
+    comparisons:
+      - left: "ck_full_identity"
+        right: "ck_full_identity"
+        method: "exact"                  # INT64 fingerprint comparison (very fast)
+        weight: 10.0
+    threshold:
+      min_score: 10.0                    # Must hit full weight to match
+
+  # Tier 2: Email + name verification
+  # Same email is a strong signal, but verify name to avoid shared email addresses.
+  - name: "email_match"
+    description: "Same email + similar name"
+    confidence: 0.95
+    blocking:
+      paths:
+        - keys: ["bk_email"]
+          candidate_limit: 50
+    comparisons:
+      - left: "email_clean"
+        right: "email_clean"
+        method: "exact_case_insensitive"
+        weight: 5.0
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein"            # Allow edit distance ≤ 2 (typos, transliteration)
+        params: { max_distance: 2 }
+        weight: 3.0
+    threshold:
+      min_score: 8.0                     # email (5) + name (3) = 8 required
+
+  # Tier 3: Fuzzy name + address
+  # Catches misspellings, abbreviations, and minor address differences.
+  - name: "fuzzy_name_address"
+    description: "Fuzzy name + address matching"
+    blocking:
+      paths:
+        - keys: ["bk_last_zip"]
+          candidate_limit: 200           # Wider net — more candidates
+        - keys: ["bk_name_state"]
+          candidate_limit: 150
+    comparisons:
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "levenshtein_normalized"   # 0.0–1.0 similarity score
+        params: { threshold: 0.8 }         # Must be ≥80% similar
+        weight: 3.0
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.8 }
+        weight: 3.0
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 2.0
+      - left: "state_clean"
+        right: "state_clean"
+        method: "exact"
+        weight: 1.0
+    threshold:
+      min_score: 7.0                     # Need name (6) + at least zip (2) or state (1)
+    # Hard negatives — disqualify impossible matches
+    hard_negatives:
+      - left: "first_initial"
+        method: "different"              # If first letters differ, penalize
+        action: "penalize"
+        penalty: -2.0
+      - left: "dob"
+        method: "different"              # Different DOB = definitely different person
+        action: "disqualify"
+    # Soft signals — bonus points for additional evidence
+    soft_signals:
+      - left: "phone_clean"
+        method: "exact"                  # Same phone = strong supporting evidence
+        bonus: 2.0
+
+# ============================================================================
+# Reconciliation — how to combine matches into clusters
+# ============================================================================
+
+reconciliation:
+  strategy: "tier_priority"              # Higher-tier matches take precedence
+  clustering:
+    method: "connected_components"       # Standard graph-based clustering
+    max_iterations: 15                   # Max iterations for convergence
+  canonical_selection:
+    method: "completeness"               # Most-complete record becomes canonical
+  output:
+    entity_id_prefix: "CUST"             # Resolved IDs: CUST_000001, CUST_000002, ...
+
+# ============================================================================
+# Incremental Processing
+# ============================================================================
+# After the initial full run, only process new/updated records.
+# Grace period ensures late-arriving records are captured.
+
+incremental:
+  enabled: true
+  grace_period_hours: 24                 # Re-process records from last 24 hours
+  cursor_columns: ["modified_date"]      # Watermark tracks this column
+  batch_size: 1000000                    # Process up to 1M records per batch

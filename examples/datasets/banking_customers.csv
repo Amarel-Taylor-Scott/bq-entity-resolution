@@ -1,0 +1,26 @@
+id,first_name,last_name,email,phone,ssn,account_number,routing_number,address_line_1,city,state,zip,date_of_birth,updated_at
+1,James,Morrison,james.morrison@gmail.com,555-234-8901,123-45-6789,4820019371,021000021,742 Birch St,Philadelphia,PA,19103,1982-04-17,2024-01-01 00:00:00
+2,James,Morison,j.morrison@gmail.com,5552348901,123-45-6789,4820019371,021000021,742 Birch Street,Philadelphia,PA,19103,1982-04-17,2024-01-05 00:00:00
+3,J. R.,Morrison,james.morrison@gmail.com,(555) 234-8901,123456789,6193200458,021000021,742 Birch St Apt 3B,Philadelphia,PA,19103,1982-04-17,2024-01-10 00:00:00
+4,Catherine,Walsh,catherine.walsh@yahoo.com,555-876-5432,987-65-4321,7731004829,026009593,1500 Market St,San Francisco,CA,94105,1990-11-02,2024-01-01 00:00:00
+5,Catherine,Walsh-Bennett,cwalsh@yahoo.com,555-876-5432,987-65-4321,7731004829,026009593,1500 Market Street,San Francisco,CA,94105,1990-11-02,2024-01-08 00:00:00
+6,Cathy,Walsh,catherine.walsh@yahoo.com,5558765432,987654321,9210055738,026009593,1500 Market St Suite 200,San Francisco,CA,94105,1990-11-02,2024-01-15 00:00:00
+7,David,Chen,david.chen@outlook.com,555-345-6789,456-78-9012,3389102746,121000358,88 Pine Ave,Boston,MA,02108,1975-06-23,2024-01-01 00:00:00
+8,David,Chen,dchen@outlook.com,555-345-6790,456-78-9012,3389102746,121000358,88 Pine Avenue,Boston,MA,02108,1975-06-23,2024-01-04 00:00:00
+9,Dave,Chen,david.chen@outlook.com,,456789012,5501839274,121000358,88 Pine Ave,Boston,MA,02108,1975-06-23,2024-01-12 00:00:00
+10,Michelle,Rodriguez,m.rodriguez@hotmail.com,555-111-4444,234-56-7890,8842017563,322271627,205 Oak Blvd,Miami,FL,33130,1988-09-14,2024-01-01 00:00:00
+11,Michelle,Rodriguez-Perez,michelle.rodriguez@hotmail.com,555-111-4444,234-56-7890,8842017563,322271627,205 Oak Boulevard,Miami,FL,33130,1988-09-14,2024-01-06 00:00:00
+12,Michele,Rodriguez,m.rodriguez@hotmail.com,(555) 111-4444,234567890,1127308495,322271627,205 Oak Blvd Apt 12,Miami,FL,33130,1988-09-14,2024-01-14 00:00:00
+13,Robert,Nakamura,robert.nakamura@corp.net,555-222-3333,345-67-8901,6650284913,021202337,33 Maple Dr,Chicago,IL,60601,1970-01-30,2024-01-01 00:00:00
+14,Bob,Nakamura,rnakamura@corp.net,555-222-3333,345-67-8901,6650284913,021202337,33 Maple Drive,Chicago,IL,60601,1970-01-30,2024-01-09 00:00:00
+15,Robert,Nakamura,robert.nakamura@corp.net,5552223333,,2294017583,021202337,33 Maple Dr,Chicago,IL,60601,1970-01-30,2024-01-18 00:00:00
+16,Priya,Sharma,priya.sharma@icloud.com,555-444-7777,567-89-0123,4471029385,091000019,610 Cedar Ln,Austin,TX,78701,1993-03-08,2024-01-01 00:00:00
+17,Priya,Sharma,psharma@icloud.com,(555) 444-7777,567-89-0123,4471029385,091000019,610 Cedar Lane,Austin,TX,78701,1993-03-08,2024-01-07 00:00:00
+18,P.,Sharma,priya.sharma@icloud.com,555-444-7778,567890123,7793501824,091000019,610 Cedar Ln Unit 4,Austin,TX,78701,1993-03-08,2024-01-13 00:00:00
+19,Thomas,O'Brien,tobrien@email.com,555-666-8888,678-90-1234,5538201749,061000052,420 Walnut St,Denver,CO,80202,1965-12-11,2024-01-01 00:00:00
+20,Tom,OBrien,thomas.obrien@email.com,555-666-8888,678-90-1234,5538201749,061000052,420 Walnut Street,Denver,CO,80202,1965-12-11,2024-01-11 00:00:00
+21,Thomas,O'Brien,tobrien@email.com,5556668888,678901234,8810293647,061000052,420 Walnut St,Denver,CO,80202,1965-12-11,2024-01-20 00:00:00
+22,Sarah,Kim,sarah.kim@proton.me,555-999-1111,789-01-2345,9923048175,071000013,155 River Rd,Seattle,WA,98101,1997-07-25,2024-01-01 00:00:00
+23,Sara,Kim,sarahkim@proton.me,555-999-1111,789-01-2345,9923048175,071000013,155 River Road,Seattle,WA,98101,1997-07-25,2024-01-03 00:00:00
+24,Angela,Foster,angela.foster@live.com,555-333-5555,890-12-3456,1104829376,044000037,77 Elmwood Ave,Portland,OR,97201,1980-05-19,2024-01-01 00:00:00
+25,Marcus,Thompson,marcus.t@gmail.com,555-777-2222,901-23-4567,2287401935,053000196,300 Park Pl,Atlanta,GA,30301,1986-08-06,2024-01-01 00:00:00

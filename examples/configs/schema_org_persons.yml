@@ -1,0 +1,155 @@
+version: "1.0"
+
+# Schema.org Entity Resolution Test Config
+# Tests auto-detection of Schema.org property name aliases
+# (givenName, familyName, telephone, birthDate, postalCode, etc.)
+
+project:
+  name: schema_org_persons
+  bq_project: "local-test"
+  bq_dataset_bronze: er_bronze
+  bq_dataset_silver: er_silver
+  bq_dataset_gold: er_gold
+  bq_dataset_meta: er_meta
+
+sources:
+  - name: persons
+    table: "local-test.raw.schema_org_persons"
+    unique_key: id
+    updated_at: updated_at
+    columns:
+      - name: id
+        type: STRING
+      - name: givenName
+        type: STRING
+        role: first_name
+      - name: familyName
+        type: STRING
+        role: last_name
+      - name: email
+        type: STRING
+        role: email
+      - name: telephone
+        type: STRING
+        role: phone
+      - name: streetAddress
+        type: STRING
+        role: address_line_1
+      - name: addressLocality
+        type: STRING
+        role: city
+      - name: addressRegion
+        type: STRING
+        role: state
+      - name: postalCode
+        type: STRING
+        role: zip_code
+      - name: birthDate
+        type: STRING
+        role: date_of_birth
+      - name: updated_at
+        type: TIMESTAMP
+
+feature_engineering:
+  name_features:
+    features:
+      - name: givenName_clean
+        function: name_clean
+        input: givenName
+      - name: familyName_clean
+        function: name_clean
+        input: familyName
+  contact_features:
+    features:
+      - name: email_clean
+        function: lower_trim
+        input: email
+      - name: phone_clean
+        function: phone_standardize
+        input: telephone
+  address_features:
+    features:
+      - name: zip5
+        function: zip5
+        input: postalCode
+  blocking_keys:
+    - name: bk_email_fp
+      function: farm_fingerprint
+      inputs: [email_clean]
+    - name: bk_name_fp
+      function: farm_fingerprint_concat
+      inputs: [givenName_clean, familyName_clean]
+    - name: bk_phone_fp
+      function: farm_fingerprint
+      inputs: [phone_clean]
+
+comparison_pool:
+  email_exact:
+    left: email_clean
+    right: email_clean
+    method: exact
+    weight: 5.0
+  first_name_exact:
+    left: givenName_clean
+    right: givenName_clean
+    method: exact
+    weight: 3.0
+  last_name_exact:
+    left: familyName_clean
+    right: familyName_clean
+    method: exact
+    weight: 3.0
+  first_name_lev:
+    left: givenName_clean
+    right: givenName_clean
+    method: levenshtein_normalized
+    weight: 4.0
+  last_name_lev:
+    left: familyName_clean
+    right: familyName_clean
+    method: levenshtein_normalized
+    weight: 4.0
+  phone_exact:
+    left: phone_clean
+    right: phone_clean
+    method: exact
+    weight: 4.0
+
+matching_tiers:
+  - name: exact
+    description: "Email or phone exact match with name confirmation"
+    blocking:
+      cross_batch: false
+      paths:
+        - keys: [bk_email_fp]
+        - keys: [bk_phone_fp]
+    comparisons:
+      - ref: email_exact
+      - ref: first_name_exact
+      - ref: last_name_exact
+      - ref: phone_exact
+    threshold:
+      min_score: 8.0
+
+  - name: fuzzy
+    description: "Fuzzy name matching with supporting evidence"
+    blocking:
+      cross_batch: false
+      paths:
+        - keys: [bk_name_fp]
+        - keys: [bk_phone_fp]
+    comparisons:
+      - ref: first_name_lev
+      - ref: last_name_lev
+      - ref: email_exact
+      - ref: phone_exact
+    threshold:
+      min_score: 6.0
+
+reconciliation:
+  clustering:
+    method: connected_components
+    max_iterations: 20
+
+monitoring:
+  log_level: INFO

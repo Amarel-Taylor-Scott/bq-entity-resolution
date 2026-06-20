@@ -1,0 +1,62 @@
+# Default configuration for bq-entity-resolution
+# Override any of these values in your project config.yml
+
+version: "1.0"
+
+feature_engineering:
+  name_features:
+    enabled: true
+    features: []
+  address_features:
+    enabled: true
+    features: []
+  contact_features:
+    enabled: true
+    features: []
+  blocking_keys: []
+  composite_keys: []
+  custom_features: []
+
+embeddings:
+  enabled: false
+  model: "text-embedding-004"
+  concat_separator: " | "
+  dimensions: 768
+  batch_size: 5000
+  lsh:
+    num_hash_tables: 20
+    num_hash_functions_per_table: 8
+    bucket_column_prefix: "lsh_bucket"
+    projection_seed: 42
+
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+    max_iterations: 20
+    min_cluster_confidence: 0.0
+  canonical_selection:
+    method: "completeness"
+    source_priority: []
+  output:
+    include_match_metadata: true
+    include_passthrough: true
+    entity_id_prefix: "ENT"
+
+incremental:
+  enabled: true
+  grace_period_hours: 48
+  cursor_columns:
+    - "updated_at"
+  batch_size: 2000000
+  full_refresh_on_schema_change: true
+
+monitoring:
+  log_level: "INFO"
+  log_format: "json"
+  metrics:
+    enabled: true
+    destination: "bigquery"
+  profiling:
+    enabled: false
+    sample_rate: 0.01

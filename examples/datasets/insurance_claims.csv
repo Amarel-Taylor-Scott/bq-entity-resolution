@@ -1,0 +1,26 @@
+id,first_name,last_name,email,phone,policy_number,claim_number,date_of_birth,address_line_1,city,state,zip,date_of_loss,updated_at
+1,Michael,Henderson,michael.henderson@gmail.com,555-301-4420,POL-2023-88712,CLM-40001,1979-03-22,814 Walnut St,Columbus,OH,43215,2023-06-15,2024-01-01 00:00:00
+2,Michael,Henderson,m.henderson@gmail.com,5553014420,POL-2023-88712,CLM-40002,1979-03-22,814 Walnut Street,Columbus,OH,43215,2023-09-03,2024-01-05 00:00:00
+3,Mike,Henderson,michael.henderson@gmail.com,(555) 301-4420,POL-2023-88712,CLM-40003,1979-03-22,814 Walnut St Apt 2,Columbus,OH,43215,2024-01-10,2024-01-12 00:00:00
+4,Linda,Tran,linda.tran@yahoo.com,555-482-9173,POL-2022-55410,CLM-40010,1986-11-07,290 Birch Ave,Tampa,FL,33602,2023-04-21,2024-01-01 00:00:00
+5,Linda,Tran,lindatran@yahoo.com,555-482-9173,POL-2022-55410,CLM-40010,1986-11-07,290 Birch Avenue,Tampa,FL,33602,2023-04-21,2024-01-03 00:00:00
+6,Lynda,Tran,linda.tran@yahoo.com,5554829173,POL-2024-61003,CLM-40011,1986-11-07,290 Birch Ave,Tampa,FL,33602,2024-01-08,2024-01-10 00:00:00
+7,Robert,Castillo,robert.castillo@outlook.com,555-739-2085,POL-2023-72100,CLM-40020,1972-08-14,1503 Maple Dr,Denver,CO,80202,2023-07-30,2024-01-01 00:00:00
+8,Roberto,Castillo,r.castillo@outlook.com,555-739-2085,POL-2023-72100,CLM-40021,1972-08-14,1503 Maple Drive,Denver,CO,80202,2023-11-19,2024-01-06 00:00:00
+9,Robert,Castilo,robert.castillo@outlook.com,(555) 739-2085,POL-2023-72100,CLM-40020,1972-08-14,1503 Maple Dr,Denver,CO,80202,2023-07-30,2024-01-08 00:00:00
+10,Susan,Park,susan.park@hotmail.com,555-615-3308,POL-2021-43290,CLM-40030,1990-05-16,67 Cedar Ln,Portland,OR,97201,2023-03-11,2024-01-01 00:00:00
+11,Susan,Park,susanpark@hotmail.com,(555) 615-3308,POL-2021-43290,CLM-40031,1990-05-16,67 Cedar Lane,Portland,OR,97201,2023-08-25,2024-01-04 00:00:00
+12,Suzanne,Park,susan.park@hotmail.com,5556153308,POL-2021-43290,CLM-40032,1990-05-16,67 Cedar Ln Unit 5,Portland,OR,97201,2024-02-01,2024-02-03 00:00:00
+13,David,Oconnor,david.oconnor@corp.net,555-928-4461,POL-2023-90215,CLM-40040,1968-12-01,440 Pine Rd,Charlotte,NC,28202,2023-05-18,2024-01-01 00:00:00
+14,David,O'Connor,doconnor@corp.net,555-928-4461,POL-2023-90215,CLM-40041,1968-12-01,440 Pine Road,Charlotte,NC,28202,2023-10-09,2024-01-07 00:00:00
+15,Dave,Oconnor,david.oconnor@corp.net,5559284461,POL-2024-10322,CLM-40042,1968-12-01,440 Pine Rd,Charlotte,NC,28202,2024-01-22,2024-01-24 00:00:00
+16,Karen,Johansson,karen.j@webmail.com,555-217-8834,POL-2022-67891,CLM-40050,1983-07-29,88 Spruce Blvd,Minneapolis,MN,55401,2023-02-14,2024-01-01 00:00:00
+17,Karen,Johanson,karenj@webmail.com,555-217-8834,POL-2022-67891,CLM-40050,1983-07-29,88 Spruce Boulevard,Minneapolis,MN,55401,2023-02-14,2024-01-02 00:00:00
+18,James,Whitfield,james.whitfield@email.com,555-503-6672,POL-2023-81045,CLM-40060,1975-10-11,1200 Oak Ave,Sacramento,CA,95814,2023-09-27,2024-01-01 00:00:00
+19,Jim,Whitfield,j.whitfield@email.com,555-503-6672,POL-2023-81045,CLM-40061,1975-10-11,1200 Oak Avenue,Sacramento,CA,95814,2024-01-05,2024-01-07 00:00:00
+20,James,Whitfeld,james.whitfield@email.com,(555) 503-6672,POL-2023-81045,CLM-40060,1975-10-11,1200 Oak Ave,Sacramento,CA,95814,2023-09-27,2024-01-09 00:00:00
+21,Patricia,Nguyen,p.nguyen@icloud.com,555-841-5509,POL-2024-02177,CLM-40070,1994-02-18,325 Elm St,Austin,TX,78701,2024-01-15,2024-01-17 00:00:00
+22,Patricia,Nguyen,patricia.nguyen@icloud.com,555-841-5510,POL-2024-02177,CLM-40071,1994-02-18,325 Elm Street,Austin,TX,78701,2024-02-02,2024-02-04 00:00:00
+23,Angela,Foster,angela.foster@live.com,555-333-5555,POL-2023-55012,CLM-40080,1980-05-19,77 Elmwood Ave,Portland,OR,97201,2023-12-01,2024-01-01 00:00:00
+24,Marcus,Thompson,marcus.t@gmail.com,555-777-2222,POL-2022-39841,CLM-40090,1986-08-06,300 Park Pl,Atlanta,GA,30301,2023-06-22,2024-01-01 00:00:00
+25,Raj,Patel,raj.patel@techcorp.com,555-190-4738,POL-2023-44908,CLM-40100,1991-04-03,512 River Rd,Seattle,WA,98101,2023-11-14,2024-01-01 00:00:00

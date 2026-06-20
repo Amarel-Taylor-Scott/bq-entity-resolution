@@ -1,0 +1,435 @@
+# Vendor Master Data Matching
+# ===========================================================================
+#
+# Deduplicates vendor/supplier records across procurement, ERP, and accounts
+# payable systems. Large enterprises often maintain thousands of vendor
+# records across multiple business units, subsidiaries, and legacy systems.
+# The same vendor frequently appears under different legal name variations,
+# addresses, and internal vendor codes -- leading to duplicate payments,
+# missed volume discounts, fragmented spend analytics, and increased fraud
+# risk from undetected vendor master duplicates.
+#
+# Key identifiers:
+#   vendor_id      -- Internal vendor master code (system-specific)
+#   duns_number    -- Dun & Bradstreet 9-digit unique business identifier
+#   ein            -- IRS Employer Identification Number (XX-XXXXXXX)
+#   cage_code      -- Commercial and Government Entity code (5 chars)
+#                     Used for government contractors (DFARS/FAR compliance)
+#
+# Matching strategy (two tiers):
+#   1. exact   -- Deterministic match on DUNS or EIN
+#   2. fuzzy   -- Fuzzy company name + address for records without IDs
+#
+# Vendor matching challenges:
+#   - Legal name vs. DBA (Doing Business As) vs. trade name variations
+#   - Business suffix inconsistency: "LLC" vs "L.L.C." vs omitted
+#   - Parent/subsidiary confusion (same address, different legal entities)
+#   - Mergers and acquisitions creating duplicate vendor records
+#   - International vendors with transliterated names
+#
+# Usage:
+#   bq-er validate --config config/examples/vendor_master.yml
+#   bq-er preview-sql --config config/examples/vendor_master.yml --tier exact --stage all
+#   bq-er run --config config/examples/vendor_master.yml --dry-run
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Project: dataset routing
+# ---------------------------------------------------------------------------
+project:
+  name: "vendor_master_dedup"
+  description: "Deduplicate vendor records across procurement and AP systems"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "vendor_bronze"
+  bq_dataset_silver: "vendor_silver"
+  bq_dataset_gold: "vendor_gold"
+  bq_location: "US"
+  watermark_dataset: "vendor_meta"
+
+# ---------------------------------------------------------------------------
+# Source: vendor records from ERP and procurement systems
+# ---------------------------------------------------------------------------
+sources:
+  - name: "vendors"
+    table: "${BQ_PROJECT}.raw_procurement.vendor_records"
+    unique_key: "vendor_record_id"
+    updated_at: "last_modified"
+    columns:
+      - name: "vendor_record_id"
+        type: "STRING"
+      - name: "vendor_id"
+        type: "STRING"
+        # Internal vendor master code. Different across ERP systems,
+        # business units, and subsidiaries. NOT globally unique.
+      - name: "duns_number"
+        type: "STRING"
+        # Dun & Bradstreet 9-digit number. Globally unique business
+        # identifier. The gold standard for vendor identity when present.
+        # Coverage varies -- smaller vendors may not have a DUNS.
+      - name: "company_name"
+        type: "STRING"
+        # Legal or DBA name of the vendor. Subject to wide variation:
+        # "ACME Corp.", "Acme Corporation", "ACME CORP LLC".
+      - name: "ein"
+        type: "STRING"
+        role: "ein"
+        # IRS Employer Identification Number. Unique per US legal entity.
+        # Format: XX-XXXXXXX. International vendors will not have one.
+      - name: "cage_code"
+        type: "STRING"
+        # Commercial and Government Entity code (5 alphanumeric chars).
+        # Assigned by DLA (Defense Logistics Agency) to entities doing
+        # business with the federal government. Required for DFARS/FAR
+        # compliance. Not all vendors have one.
+      - name: "address"
+        type: "STRING"
+        role: "address_line_1"
+      - name: "city"
+        type: "STRING"
+        role: "city"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip"
+        type: "STRING"
+        role: "zip"
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+      - name: "email"
+        type: "STRING"
+        role: "email"
+        # Vendor contact email. May be a personal contact or a generic
+        # inbox (ap@vendor.com, sales@vendor.com).
+      - name: "source_system"
+        type: "STRING"
+        # Originating system: SAP, ORACLE_AP, ARIBA, COUPA, MANUAL.
+      - name: "last_modified"
+        type: "TIMESTAMP"
+    passthrough_columns:
+      - "source_system"
+      - "vendor_id"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+feature_engineering:
+
+  # --- Company name features ---
+  name_features:
+    enabled: true
+    features:
+      - name: "company_name_clean"
+        function: "name_clean"
+        input: "company_name"
+        # Uppercase, strip punctuation, normalize whitespace.
+      - name: "company_core_name"
+        function: "strip_business_suffix"
+        input: "company_name_clean"
+        # Removes LLC, Inc, Corp, Ltd, Co, LP, LLP, PLLC, etc.
+        # "ACME WIDGETS INC" -> "ACME WIDGETS"
+        # This is critical for vendor matching because business suffix
+        # formatting is the single most common source of false non-matches.
+      - name: "company_name_soundex"
+        function: "soundex"
+        input: "company_core_name"
+        # Phonetic encoding for fuzzy blocking.
+      - name: "company_first_word"
+        function: "first_word"
+        input: "company_core_name"
+        # First word of the company name -- useful for blocking on
+        # companies that share a brand name prefix ("ACME" in
+        # "ACME WIDGETS" and "ACME MANUFACTURING").
+
+  # --- Address features ---
+  address_features:
+    enabled: true
+    features:
+      - name: "address_clean"
+        function: "address_standardize"
+        input: "address"
+      - name: "city_clean"
+        function: "upper_trim"
+        input: "city"
+      - name: "state_clean"
+        function: "upper_trim"
+        input: "state"
+      - name: "zip5"
+        function: "left"
+        input: "zip"
+        params: { length: 5 }
+
+  # --- Identifier and contact features ---
+  contact_features:
+    enabled: true
+    features:
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+      - name: "email_domain"
+        function: "email_domain"
+        input: "email"
+        # Vendor email domain -- strong signal when the domain matches
+        # the company name (e.g., @acmewidgets.com).
+      - name: "ein_clean"
+        function: "ein_format"
+        input: "ein"
+      - name: "duns_clean"
+        function: "upper_trim"
+        input: "duns_number"
+      - name: "cage_clean"
+        function: "upper_trim"
+        input: "cage_code"
+
+  # --- Blocking keys ---
+  # Vendor blocking strategy:
+  #   bk_duns        -- DUNS number (strongest unique ID)
+  #   bk_ein         -- EIN (tax identifier)
+  #   bk_cage        -- CAGE code (government entity ID)
+  #   bk_name_state  -- Company name phonetic + state
+  #   bk_name_zip    -- Company first word + ZIP for geographic matching
+  #   bk_phone       -- Phone number
+  #   bk_email       -- Email address
+  blocking_keys:
+    - name: "bk_duns"
+      function: "farm_fingerprint"
+      inputs: ["duns_clean"]
+      # DUNS number -- globally unique business identifier.
+
+    - name: "bk_ein"
+      function: "farm_fingerprint"
+      inputs: ["ein_clean"]
+      # EIN -- unique per US legal entity.
+
+    - name: "bk_cage"
+      function: "farm_fingerprint"
+      inputs: ["cage_clean"]
+      # CAGE code -- unique per government contractor entity.
+
+    - name: "bk_name_state"
+      function: "farm_fingerprint_concat"
+      inputs: ["company_name_soundex", "state_clean"]
+      # Phonetic company name + state -- primary fuzzy blocking key.
+
+    - name: "bk_name_zip"
+      function: "farm_fingerprint_concat"
+      inputs: ["company_first_word", "zip5"]
+      # First word of company name + ZIP -- geographic clustering.
+
+    - name: "bk_phone"
+      function: "farm_fingerprint"
+      inputs: ["phone_clean"]
+
+    - name: "bk_email_domain"
+      function: "farm_fingerprint"
+      inputs: ["email_domain"]
+      # Email domain blocking -- vendors at the same domain are
+      # candidates for matching (but also catches unrelated contacts
+      # at @gmail.com, etc., so candidate_limit is important).
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+matching_tiers:
+
+  # -------------------------------------------------------------------------
+  # Tier 1: Exact match on DUNS or EIN
+  # -------------------------------------------------------------------------
+  # Deterministic match on government/industry-issued identifiers. When
+  # DUNS number or EIN matches exactly, the records represent the same
+  # legal business entity. Company name comparison provides a safety check
+  # against identifier data entry errors.
+  - name: "exact"
+    description: "Deterministic match on DUNS number, EIN, or CAGE code"
+    confidence: 1.0
+    blocking:
+      paths:
+        - keys: ["bk_duns"]
+          candidate_limit: 30
+        - keys: ["bk_ein"]
+          candidate_limit: 30
+        - keys: ["bk_cage"]
+          candidate_limit: 30
+    comparisons:
+      - left: "duns_clean"
+        right: "duns_clean"
+        method: "exact"
+        weight: 7.0
+        # DUNS number exact match -- globally unique.
+
+      - left: "ein_clean"
+        right: "ein_clean"
+        method: "exact"
+        weight: 6.0
+        # EIN exact match -- unique per US legal entity.
+
+      - left: "cage_clean"
+        right: "cage_clean"
+        method: "exact"
+        weight: 5.0
+        # CAGE code match -- unique per government contractor.
+
+      - left: "company_core_name"
+        right: "company_core_name"
+        method: "levenshtein"
+        params: { max_distance: 3 }
+        weight: 2.0
+        # Name verification with typo tolerance. Allows "ACME WIDGETS"
+        # vs "ACME WIDGTS" (1 typo) to still confirm the match.
+
+    threshold:
+      method: "sum"
+      min_score: 7.0
+      # DUNS (7) alone qualifies. EIN (6) + name (2) = 8 qualifies.
+      # CAGE (5) + name (2) = 7 qualifies.
+
+    hard_negatives:
+      - left: "ein_clean"
+        method: "different"
+        action: "disqualify"
+        # Different EINs mean different legal entities. A parent company
+        # and subsidiary have different EINs and should NOT be merged.
+
+    soft_signals:
+      - left: "cage_clean"
+        method: "exact"
+        bonus: 2.0
+        # CAGE code match provides additional confirmation.
+
+  # -------------------------------------------------------------------------
+  # Tier 2: Fuzzy company name + address matching
+  # -------------------------------------------------------------------------
+  # Catches vendor records missing DUNS/EIN (common for small businesses,
+  # sole proprietors, and international vendors). Uses fuzzy company name
+  # matching combined with address similarity and contact information.
+  - name: "fuzzy"
+    description: "Fuzzy company name + address for records without matching IDs"
+    confidence: 0.82
+    blocking:
+      paths:
+        - keys: ["bk_name_state"]
+          candidate_limit: 200
+        - keys: ["bk_name_zip"]
+          candidate_limit: 150
+        - keys: ["bk_phone"]
+          candidate_limit: 100
+        - keys: ["bk_email_domain"]
+          candidate_limit: 100
+    comparisons:
+      - left: "company_core_name"
+        right: "company_core_name"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.80 }
+        weight: 4.0
+        # Fuzzy company name after suffix stripping.
+        # "ACME MANUFACTURING" vs "ACME MFG" may not clear 0.80
+        # threshold, but "ACME WIDGETS" vs "ACME WIDGITS" will.
+
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.70 }
+        weight: 2.0
+        # Address similarity -- same headquarters location.
+
+      - left: "city_clean"
+        right: "city_clean"
+        method: "exact"
+        weight: 1.0
+        # City exact match.
+
+      - left: "state_clean"
+        right: "state_clean"
+        method: "exact"
+        weight: 1.0
+        # State exact match.
+
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 1.5
+        # ZIP code exact match.
+
+    threshold:
+      method: "sum"
+      min_score: 7.5
+      # Requires strong name match (4) + address/location signals (3.5+).
+
+    hard_negatives:
+      - left: "ein_clean"
+        method: "different"
+        action: "disqualify"
+        # Different EINs are always disqualifying -- different legal entities.
+
+      - left: "state_clean"
+        method: "different"
+        action: "penalize"
+        penalty: -2.0
+        # Different states are a moderate negative. Same company may have
+        # offices in multiple states, but HQ address should be consistent.
+
+    soft_signals:
+      - left: "phone_clean"
+        method: "exact"
+        bonus: 2.0
+        # Same phone number is strong supporting evidence.
+
+      - left: "email_domain"
+        method: "exact"
+        bonus: 1.5
+        # Same email domain (e.g., @acmewidgets.com) suggests same company.
+        # Weaker for generic domains (@gmail.com) but valuable for
+        # corporate domains.
+
+      - left: "email_clean"
+        method: "exact_case_insensitive"
+        bonus: 2.5
+        # Exact email match is stronger than domain-only match.
+
+      - left: "cage_clean"
+        method: "exact"
+        bonus: 3.0
+        # CAGE code match in the fuzzy tier provides high-confidence
+        # confirmation of government contractor identity.
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+    max_iterations: 15
+  canonical_selection:
+    method: "completeness"
+    # Most complete record becomes the canonical vendor entry.
+    # Records from primary ERP systems typically have the most
+    # fields populated (DUNS, EIN, full address, banking details).
+  output:
+    include_match_metadata: true
+    include_passthrough: true
+    entity_id_prefix: "VND"
+    # Resolved vendor IDs: VND_000001, VND_000002, etc.
+
+# ---------------------------------------------------------------------------
+# Incremental processing
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: true
+  grace_period_hours: 24
+  cursor_columns: ["last_modified"]
+  batch_size: 500000
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  log_level: "INFO"
+  log_format: "json"
+  metrics:
+    enabled: true
+    destination: "bigquery"

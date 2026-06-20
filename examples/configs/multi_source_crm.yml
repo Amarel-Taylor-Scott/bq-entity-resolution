@@ -1,0 +1,198 @@
+version: "1.0"
+
+project:
+  name: multi_source_crm
+  bq_project: "local-test"
+  bq_dataset_bronze: er_bronze
+  bq_dataset_silver: er_silver
+  bq_dataset_gold: er_gold
+  bq_dataset_meta: er_meta
+  link_type: link_and_dedupe
+
+sources:
+  - name: crm
+    table: "local-test.raw.crm_contacts"
+    unique_key: id
+    updated_at: updated_at
+    columns:
+      - name: id
+        type: STRING
+      - name: first_name
+        type: STRING
+        role: first_name
+      - name: last_name
+        type: STRING
+        role: last_name
+      - name: email
+        type: STRING
+        role: email
+      - name: phone
+        type: STRING
+        role: phone
+      - name: city
+        type: STRING
+        role: city
+      - name: state
+        type: STRING
+        role: state
+      - name: zip
+        type: STRING
+        role: zip_code
+      - name: updated_at
+        type: TIMESTAMP
+
+  - name: erp
+    table: "local-test.raw.erp_customers"
+    unique_key: id
+    updated_at: updated_at
+    columns:
+      - name: id
+        type: STRING
+      - name: first_name
+        type: STRING
+        role: first_name
+      - name: last_name
+        type: STRING
+        role: last_name
+      - name: email
+        type: STRING
+        role: email
+      - name: phone
+        type: STRING
+        role: phone
+      - name: city
+        type: STRING
+        role: city
+      - name: state
+        type: STRING
+        role: state
+      - name: zip
+        type: STRING
+        role: zip_code
+      - name: updated_at
+        type: TIMESTAMP
+
+  - name: support
+    table: "local-test.raw.support_tickets"
+    unique_key: id
+    updated_at: updated_at
+    columns:
+      - name: id
+        type: STRING
+      - name: first_name
+        type: STRING
+        role: first_name
+      - name: last_name
+        type: STRING
+        role: last_name
+      - name: email
+        type: STRING
+        role: email
+      - name: phone
+        type: STRING
+        role: phone
+      - name: city
+        type: STRING
+        role: city
+      - name: state
+        type: STRING
+        role: state
+      - name: zip
+        type: STRING
+        role: zip_code
+      - name: updated_at
+        type: TIMESTAMP
+
+feature_engineering:
+  name_features:
+    features:
+      - name: first_name_clean
+        function: name_clean
+        input: first_name
+      - name: last_name_clean
+        function: name_clean
+        input: last_name
+  contact_features:
+    features:
+      - name: email_clean
+        function: lower_trim
+        input: email
+      - name: phone_clean
+        function: phone_standardize
+        input: phone
+  address_features:
+    features:
+      - name: zip5
+        function: zip5
+        input: zip
+  blocking_keys:
+    - name: bk_email_fp
+      function: farm_fingerprint
+      inputs: [email_clean]
+    - name: bk_name_fp
+      function: farm_fingerprint_concat
+      inputs: [first_name_clean, last_name_clean]
+    - name: bk_phone_fp
+      function: farm_fingerprint
+      inputs: [phone_clean]
+
+comparison_pool:
+  email_exact:
+    left: email_clean
+    right: email_clean
+    method: exact
+    weight: 5.0
+  first_name_exact:
+    left: first_name_clean
+    right: first_name_clean
+    method: exact
+    weight: 3.0
+  last_name_exact:
+    left: last_name_clean
+    right: last_name_clean
+    method: exact
+    weight: 3.0
+  phone_exact:
+    left: phone_clean
+    right: phone_clean
+    method: exact
+    weight: 4.0
+
+matching_tiers:
+  - name: exact
+    description: "Email or phone exact match with name confirmation"
+    blocking:
+      cross_batch: false
+      paths:
+        - keys: [bk_email_fp]
+        - keys: [bk_phone_fp]
+    comparisons:
+      - ref: email_exact
+      - ref: first_name_exact
+      - ref: last_name_exact
+      - ref: phone_exact
+    threshold:
+      min_score: 8.0
+
+  - name: fuzzy
+    description: "Name-based blocking with supporting evidence"
+    blocking:
+      cross_batch: false
+      paths:
+        - keys: [bk_name_fp]
+        - keys: [bk_phone_fp]
+    comparisons:
+      - ref: email_exact
+      - ref: first_name_exact
+      - ref: last_name_exact
+      - ref: phone_exact
+    threshold:
+      min_score: 6.0
+
+reconciliation:
+  clustering:
+    method: connected_components
+    max_iterations: 20
+
+monitoring:
+  log_level: INFO

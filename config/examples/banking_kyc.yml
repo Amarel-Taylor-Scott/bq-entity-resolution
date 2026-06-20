@@ -1,0 +1,532 @@
+# Banking KYC (Know Your Customer) Entity Resolution Pipeline
+# ===========================================================================
+#
+# Deduplicates customer records for KYC/AML compliance in banking and
+# financial services. Banks are required by the Bank Secrecy Act (BSA),
+# USA PATRIOT Act, and FinCEN regulations to maintain a single, accurate
+# view of each customer. Duplicate customer records create gaps in
+# transaction monitoring, threshold reporting, and sanctions screening.
+#
+# This config resolves individuals and businesses across account-opening
+# systems, core banking platforms, and onboarding channels into canonical
+# customer entities — enabling accurate CDD (Customer Due Diligence),
+# EDD (Enhanced Due Diligence), and SAR (Suspicious Activity Report) filing.
+#
+# Three matching tiers (strictest first):
+#   1. exact    — SSN + name match (deterministic government-issued identity)
+#   2. account  — Account number + routing number (same bank account holder)
+#   3. fuzzy    — Name similarity + address proximity + DOB (probabilistic)
+#
+# Usage:
+#   bq-er validate --config config/examples/banking_kyc.yml
+#   bq-er preview-sql --config config/examples/banking_kyc.yml --tier exact --stage all
+#   bq-er run --config config/examples/banking_kyc.yml --dry-run
+#   bq-er run --config config/examples/banking_kyc.yml --full-refresh
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Project routing — datasets for staging, matching, and final output
+# ---------------------------------------------------------------------------
+project:
+  name: "banking_kyc_dedup"
+  description: "KYC customer deduplication for BSA/AML compliance"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "kyc_bronze"      # Staging tables (cleaned source records)
+  bq_dataset_silver: "kyc_silver"      # Feature, candidate, and match tables
+  bq_dataset_gold: "kyc_gold"          # Final resolved customer entities
+  bq_location: "US"
+  watermark_dataset: "kyc_meta"        # Incremental processing watermarks
+
+# ---------------------------------------------------------------------------
+# Source data — customer records from core banking / onboarding systems
+# ---------------------------------------------------------------------------
+sources:
+  - name: "bank_customers"
+    table: "${BQ_PROJECT}.core_banking.customers"
+    unique_key: "customer_id"
+    updated_at: "last_modified_at"
+    columns:
+      # Primary key and metadata
+      - name: "customer_id"
+        type: "STRING"
+      - name: "last_modified_at"
+        type: "TIMESTAMP"
+
+      # Personal identity fields
+      - name: "first_name"
+        type: "STRING"
+        role: "first_name"
+      - name: "last_name"
+        type: "STRING"
+        role: "last_name"
+      - name: "dob"
+        type: "DATE"
+        # Date of birth — critical for KYC identity verification.
+        # Used as a hard negative in fuzzy matching and as part of
+        # the name+DOB blocking key to reduce candidate pairs.
+      - name: "ssn"
+        type: "STRING"
+        # Social Security Number — the strongest deterministic
+        # identifier for US individuals. SSN match + name match
+        # is considered a confirmed identity under CDD rules.
+        # Stored encrypted at rest; cleaned to digits-only for matching.
+
+      # Financial account identifiers
+      - name: "account_number"
+        type: "STRING"
+        # Primary deposit or loan account number. Two records sharing
+        # the same account + routing number are the same bank relationship.
+      - name: "routing_number"
+        type: "STRING"
+        # ABA routing transit number (9 digits). Combined with
+        # account_number, uniquely identifies a bank account.
+      - name: "ein"
+        type: "STRING"
+        role: "ein"
+        # Employer Identification Number (for business customers).
+        # Used as a strong identifier for business entity matching.
+
+      # Contact and address fields
+      - name: "address"
+        type: "STRING"
+        role: "address_line_1"
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+      - name: "email"
+        type: "STRING"
+        role: "email"
+      - name: "company_name"
+        type: "STRING"
+        # Business name for commercial/business banking customers.
+        # NULL for personal banking accounts.
+
+    passthrough_columns:
+      - "customer_type"        # INDIVIDUAL or BUSINESS
+      - "account_open_date"    # For regulatory reporting
+      - "branch_code"          # Originating branch
+
+# ---------------------------------------------------------------------------
+# Feature engineering — clean, standardize, and derive matching features
+# ---------------------------------------------------------------------------
+feature_engineering:
+
+  # --- Name features ---
+  name_features:
+    enabled: true
+    features:
+      # Clean personal names: uppercase, strip punctuation, normalize whitespace
+      - name: "first_name_clean"
+        function: "name_clean"
+        input: "first_name"
+      - name: "last_name_clean"
+        function: "name_clean"
+        input: "last_name"
+
+      # Phonetic encodings for fuzzy name blocking
+      - name: "first_name_soundex"
+        function: "soundex"
+        input: "first_name_clean"
+      - name: "last_name_soundex"
+        function: "soundex"
+        input: "last_name_clean"
+
+      # First initial — used as a hard negative penalty in fuzzy tier
+      - name: "first_initial"
+        function: "first_letter"
+        input: "first_name_clean"
+
+      # Name length — useful for detecting truncated names
+      - name: "first_name_len"
+        function: "char_length"
+        input: "first_name_clean"
+
+      # Business name cleaning (strip LLC, Inc, Corp suffixes)
+      - name: "company_name_clean"
+        function: "name_clean"
+        input: "company_name"
+      - name: "company_core_name"
+        function: "strip_business_suffix"
+        input: "company_name_clean"
+
+  # --- Identity document features ---
+  contact_features:
+    enabled: true
+    features:
+      # SSN: strip dashes/spaces, validate 9-digit format, extract last 4
+      - name: "ssn_clean"
+        function: "ssn_clean"
+        input: "ssn"
+      - name: "ssn_last4"
+        function: "ssn_last_four"
+        input: "ssn"
+
+      # Phone: strip formatting, standardize to 10-digit US format
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+      - name: "phone_area_code"
+        function: "phone_area_code"
+        input: "phone"
+
+      # Email: lowercase, trim whitespace
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+      - name: "email_domain"
+        function: "email_domain"
+        input: "email"
+
+      # EIN: standardize to XX-XXXXXXX format
+      - name: "ein_clean"
+        function: "ein_format"
+        input: "ein"
+
+      # Financial account identifiers
+      - name: "account_clean"
+        function: "account_number_clean"
+        input: "account_number"
+      - name: "routing_clean"
+        function: "routing_number_clean"
+        input: "routing_number"
+
+  # --- Address features ---
+  address_features:
+    enabled: true
+    features:
+      # Standardize address (abbreviations, directionals, whitespace)
+      - name: "address_clean"
+        function: "address_standardize"
+        input: "address"
+
+      # Extract address components for granular matching
+      - name: "street_number"
+        function: "extract_street_number"
+        input: "address"
+      - name: "street_name"
+        function: "extract_street_name"
+        input: "address_clean"
+
+  # --- Date features ---
+  extra_groups:
+    date_features:
+      enabled: true
+      features:
+        # Extract DOB year for name+DOB blocking key
+        - name: "dob_year"
+          function: "dob_year"
+          input: "dob"
+        # DOB month+day for partial date matching
+        - name: "dob_mmdd"
+          function: "dob_mmdd"
+          input: "dob"
+
+  # --- Blocking keys ---
+  # Blocking keys reduce the comparison space from O(n^2) to manageable
+  # candidate sets. Each key targets a specific matching scenario.
+  blocking_keys:
+
+    # BK 1: SSN last four digits
+    # Targets: Tier 1 (exact). SSN last-4 has ~10,000 buckets, so each
+    # bucket contains roughly N/10000 records — efficient for large tables.
+    - name: "bk_ssn"
+      function: "farm_fingerprint"
+      inputs: ["ssn_last4"]
+
+    # BK 2: Phone number (exact digits)
+    # Targets: Tier 3 (fuzzy) soft signal, but also generates candidates.
+    # Phone numbers are near-unique identifiers when present.
+    - name: "bk_phone"
+      function: "farm_fingerprint"
+      inputs: ["phone_clean"]
+
+    # BK 3: Name + DOB year
+    # Targets: Tier 3 (fuzzy). Combines last name phonetic encoding with
+    # birth year for a high-selectivity blocking key. Two people with the
+    # same-sounding last name born in the same year are strong candidates.
+    - name: "bk_name_dob"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "dob_year"]
+
+    # BK 4: Account number (for account-based matching)
+    # Targets: Tier 2 (account). Records sharing an account number.
+    - name: "bk_account"
+      function: "farm_fingerprint"
+      inputs: ["account_clean"]
+
+    # BK 5: Email (for fuzzy tier soft signal generation)
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: ["email_clean"]
+
+    # BK 6: EIN (for business entity matching)
+    - name: "bk_ein"
+      function: "farm_fingerprint"
+      inputs: ["ein_clean"]
+
+    # BK 7: Last name + first initial (broad fuzzy fallback)
+    - name: "bk_name_initial"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "first_initial"]
+
+  # --- Composite keys (high-precision exact-match fingerprints) ---
+  composite_keys:
+    # Full SSN + cleaned name — deterministic identity composite
+    - name: "ck_ssn_name"
+      function: "farm_fingerprint_concat"
+      inputs: ["ssn_clean", "last_name_clean"]
+
+    # Account + routing — unique bank account fingerprint
+    - name: "ck_account_routing"
+      function: "farm_fingerprint_concat"
+      inputs: ["account_clean", "routing_clean"]
+
+# ---------------------------------------------------------------------------
+# Matching tiers — executed in order; each tier processes only unmatched pairs
+# ---------------------------------------------------------------------------
+# KYC dedup uses a strict-to-loose cascade:
+#   Tier 1 catches obvious SSN-confirmed duplicates (highest confidence).
+#   Tier 2 catches same-account records across systems.
+#   Tier 3 catches remaining duplicates via fuzzy personal attributes.
+# Each successive tier only sees pairs NOT already matched by prior tiers.
+matching_tiers:
+
+  # -------------------------------------------------------------------------
+  # Tier 1: EXACT — SSN + Name (deterministic government-issued identity)
+  # -------------------------------------------------------------------------
+  # Rationale: If two records share the same SSN and last name, they are
+  # definitively the same individual under US banking regulations. SSN is
+  # the primary CDD identifier collected at account opening. Name match
+  # guards against SSN data-entry errors (transposed digits would still
+  # need to match the name to confirm identity).
+  - name: "exact"
+    description: "SSN + name deterministic identity match (CDD-grade)"
+    confidence: 1.0
+    blocking:
+      paths:
+        # Block on SSN last-4 — fast pre-filter before full SSN comparison
+        - keys: ["bk_ssn"]
+          candidate_limit: 50
+        # Also block on composite SSN+name for direct hits
+        - keys: ["ck_ssn_name"]
+          candidate_limit: 20
+    comparisons:
+      # Full SSN exact match — strongest individual identifier
+      - left: "ssn_clean"
+        right: "ssn_clean"
+        method: "exact"
+        weight: 7.0
+      # Last name must also match (guards against SSN typos)
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "exact"
+        weight: 3.0
+    threshold:
+      method: "sum"
+      min_score: 10.0    # Requires both SSN (7.0) + name (3.0) = 10.0
+    hard_negatives:
+      # If DOB is present on both records and differs, disqualify the pair.
+      # This catches rare SSN reuse / recycling edge cases.
+      - left: "dob"
+        method: "different"
+        action: "disqualify"
+    soft_signals: []
+
+  # -------------------------------------------------------------------------
+  # Tier 2: ACCOUNT — Same bank account holder
+  # -------------------------------------------------------------------------
+  # Rationale: Two records with the same account number + routing number
+  # represent the same customer relationship, even if name spelling varies
+  # (e.g., "ROBERT SMITH" vs "BOB SMITH" on joint account statements).
+  # The name comparison here is relaxed (levenshtein) because the account
+  # identifier is the primary evidence.
+  - name: "account"
+    description: "Account number + routing number match (same bank relationship)"
+    confidence: 0.97
+    blocking:
+      paths:
+        - keys: ["bk_account"]
+          candidate_limit: 30
+        - keys: ["ck_account_routing"]
+          candidate_limit: 20
+    comparisons:
+      # Account number exact match
+      - left: "account_clean"
+        right: "account_clean"
+        method: "exact"
+        weight: 5.0
+      # Routing number exact match (confirms same institution)
+      - left: "routing_clean"
+        right: "routing_clean"
+        method: "exact"
+        weight: 3.0
+      # Name similarity — relaxed to handle name variants on accounts
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein"
+        params: { max_distance: 2 }
+        weight: 2.0
+    threshold:
+      method: "sum"
+      min_score: 10.0    # Account (5) + routing (3) + name (2) = 10
+    hard_negatives:
+      # EIN mismatch on business accounts disqualifies — different legal entities
+      # should not merge even if they share an account (e.g., sub-accounts)
+      - left: "ein_clean"
+        method: "different"
+        action: "disqualify"
+    soft_signals:
+      # Phone match is a confirming signal but not required
+      - left: "phone_clean"
+        method: "exact"
+        bonus: 1.5
+      # Email match provides additional confirmation
+      - left: "email_clean"
+        method: "exact_case_insensitive"
+        bonus: 1.0
+
+  # -------------------------------------------------------------------------
+  # Tier 3: FUZZY — Name similarity + address + DOB proximity
+  # -------------------------------------------------------------------------
+  # Rationale: Catches remaining duplicates where SSN is missing/masked and
+  # account numbers differ (e.g., customer opened accounts at different
+  # branches, or records from acquired bank merger). Uses multiple weak
+  # signals that accumulate to a confident match:
+  #   - Name similarity (handles typos, nicknames, transliterations)
+  #   - DOB proximity (birthday should be within 0 days for same person)
+  #   - Address similarity (same or similar residential address)
+  # Threshold is set conservatively to minimize false positives — for KYC,
+  # a missed duplicate is preferable to a false merge that could hide
+  # suspicious activity across supposedly separate customers.
+  - name: "fuzzy"
+    description: "Fuzzy name + address + DOB matching for remaining duplicates"
+    confidence: 0.85
+    blocking:
+      paths:
+        # Name + DOB year is the primary fuzzy blocking path
+        - keys: ["bk_name_dob"]
+          candidate_limit: 200
+        # Name + first initial catches DOB-missing records
+        - keys: ["bk_name_initial"]
+          candidate_limit: 150
+        # Phone-based blocking for records where name may be very different
+        - keys: ["bk_phone"]
+          candidate_limit: 100
+        # Email-based blocking
+        - keys: ["bk_email"]
+          candidate_limit: 100
+    comparisons:
+      # First name fuzzy match (handles nicknames, typos)
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.75 }
+        weight: 2.5
+      # Last name fuzzy match (handles transliteration, hyphenation)
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.80 }
+        weight: 3.0
+      # Address similarity
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.75 }
+        weight: 2.0
+      # DOB must match within 0 days (exact date match required for individuals)
+      - left: "dob"
+        right: "dob"
+        method: "date_within_days"
+        params: { max_days: 0 }
+        weight: 3.0
+    threshold:
+      method: "sum"
+      min_score: 8.5
+      # Conservative threshold: requires strong name match + DOB + at least
+      # partial address agreement. For KYC, precision > recall.
+    hard_negatives:
+      # SSN mismatch is disqualifying — if both records have SSNs and they
+      # differ, these are definitively different people
+      - left: "ssn_clean"
+        method: "different"
+        action: "disqualify"
+      # First initial mismatch is a strong negative signal
+      - left: "first_initial"
+        method: "different"
+        action: "penalize"
+        penalty: -3.0
+      # EIN mismatch disqualifies business records
+      - left: "ein_clean"
+        method: "different"
+        action: "disqualify"
+    soft_signals:
+      # Phone match is a strong confirming signal
+      - left: "phone_clean"
+        method: "exact"
+        bonus: 2.5
+      # Email match provides high-confidence confirmation
+      - left: "email_clean"
+        method: "exact_case_insensitive"
+        bonus: 2.0
+      # Same phone area code suggests geographic proximity
+      - left: "phone_area_code"
+        method: "exact"
+        bonus: 0.5
+      # Email domain match (weaker signal — many people share gmail.com)
+      - left: "email_domain"
+        method: "exact"
+        bonus: 0.5
+      # Company name match for business customers
+      - left: "company_core_name"
+        method: "exact"
+        bonus: 2.0
+
+# ---------------------------------------------------------------------------
+# Reconciliation — how matched pairs are grouped into entities
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"    # Higher tiers (exact > account > fuzzy) take precedence
+  clustering:
+    method: "connected_components"
+    max_iterations: 15
+    # Connected components: if A matches B and B matches C, then A-B-C
+    # form a single customer entity. max_iterations caps the BQ scripting
+    # loop for convergence on very large clusters.
+  canonical_selection:
+    method: "completeness"
+    # Select the most complete record (fewest NULLs) as the canonical
+    # representation for each resolved entity. This ensures the golden
+    # customer record used for CDD has maximum data coverage.
+  output:
+    include_match_metadata: true   # Include match tier, score, confidence per pair
+    include_passthrough: true      # Carry through customer_type, account_open_date, branch
+    entity_id_prefix: "KYC"        # Entity IDs: KYC-000001, KYC-000002, ...
+
+# ---------------------------------------------------------------------------
+# Incremental processing — process new/changed records without full rescan
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: true
+  grace_period_hours: 24           # Re-process records modified in last 24h
+  cursor_columns: ["last_modified_at"]
+  batch_size: 500000               # 500K records per batch (conservative for banking)
+
+# ---------------------------------------------------------------------------
+# Scale configuration — cost controls for production
+# ---------------------------------------------------------------------------
+scale:
+  max_bytes_billed: 5000000000     # 5 GB safety cap per query
+
+# ---------------------------------------------------------------------------
+# Monitoring — structured logging and metrics for audit trail
+# ---------------------------------------------------------------------------
+monitoring:
+  log_level: "INFO"
+  log_format: "json"               # JSON logs for SIEM integration
+  metrics:
+    enabled: true
+    destination: "bigquery"        # Persist metrics for compliance reporting
+  profiling:
+    enabled: false                 # Enable for initial data quality assessment

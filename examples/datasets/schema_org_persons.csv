@@ -1,0 +1,21 @@
+id,givenName,familyName,email,telephone,streetAddress,addressLocality,addressRegion,postalCode,birthDate,updated_at
+1,Catherine,Nguyen,catherine.nguyen@proton.me,415-802-3149,2801 Divisadero St,San Francisco,CA,94123,1987-03-22,2024-06-01 08:00:00
+2,Cathy,Nguyen,cathy.nguyen@proton.me,4158023149,2801 Divisadero Street,San Francisco,CA,94123,1987-03-22,2024-06-02 09:15:00
+3,Catherine,Ngyuen,catherine.nguyen@proton.me,,2801 Divisadero St Apt 4,San Francisco,CA,94123,1987-03-22,2024-06-03 10:30:00
+4,Marcus,Ramirez,marcus.ramirez@outlook.com,312-555-7821,440 N Wabash Ave,Chicago,IL,60611,1979-11-05,2024-06-01 08:00:00
+5,Marc,Ramirez,m.ramirez@outlook.com,312-555-7821,440 North Wabash Avenue,Chicago,IL,60611,1979-11-05,2024-06-02 11:00:00
+6,Marcus,Ramierez,marcusramirez@outlook.com,3125557821,440 N Wabash Ave,Chicago,IL,60611,1979-11-05,2024-06-03 14:20:00
+7,Priya,Chakraborty,priya.c@gmail.com,617-443-9012,55 Beacon St,Boston,MA,02108,1994-08-17,2024-06-01 08:00:00
+8,Priya,Chakraborti,priyac@gmail.com,617-443-9012,55 Beacon Street,Boston,MA,02108,1994-08-17,2024-06-02 07:45:00
+9,Olga,Petrov,olga.petrov@yandex.com,503-219-6688,1925 SE Hawthorne Blvd,Portland,OR,97214,1966-01-30,2024-06-01 08:00:00
+10,Olga,Petrova,olgapetrov@yandex.com,503-219-6688,1925 SE Hawthorne Boulevard,Portland,OR,97214,1966-01-30,2024-06-02 16:10:00
+11,O,Petrov,olga.p@yandex.com,5032196688,1925 SE Hawthorne Blvd,Portland,OR,97214,1966-01-30,2024-06-03 12:00:00
+12,Daniel,Okonkwo,daniel.okonkwo@work.net,404-878-2233,3300 Peachtree Rd NE,Atlanta,GA,30326,1991-05-14,2024-06-01 08:00:00
+13,Dan,Okonkwo,d.okonkwo@work.net,404-878-2233,3300 Peachtree Road NE,Atlanta,GA,30326,1991-05-14,2024-06-02 13:30:00
+14,Hannah,Johansson,hannah.j@icloud.com,206-741-5500,801 Pine St,Seattle,WA,98101,1988-12-09,2024-06-01 08:00:00
+15,Hanna,Johansson,hannahjohansson@icloud.com,206-741-5500,801 Pine Street,Seattle,WA,98101,1988-12-09,2024-06-02 10:00:00
+16,Hannah,Johannson,hannah.j@icloud.com,,801 Pine St,Seattle,WA,98101,1988-12-09,2024-06-03 11:45:00
+17,Tomoko,Hayashi,tomoko.hayashi@jp-mail.com,512-330-4477,2200 S Lamar Blvd,Austin,TX,78704,1973-07-26,2024-06-01 08:00:00
+18,Fatima,Al-Rashid,fatima.ar@hotmail.com,305-662-8891,7700 Collins Ave,Miami Beach,FL,33141,2000-02-11,2024-06-01 08:00:00
+19,Liam,Brennan,liam.brennan@techcorp.io,720-999-1234,1600 Market St,Denver,CO,80202,1985-04-03,2024-06-01 08:00:00
+20,Liam,Brennan,l.brennan@techcorp.io,720-999-1234,1600 Market Street,Denver,CO,80202,1985-04-03,2024-06-02 15:00:00

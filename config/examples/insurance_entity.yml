@@ -1,0 +1,548 @@
+# Insurance Entity Resolution Pipeline Configuration
+# Resolves insured entities across policy records into unique canonical entities.
+#
+# Usage:
+#   bq-er validate --config config/examples/insurance_entity.yml
+#   bq-er run --config config/examples/insurance_entity.yml --dry-run
+#   bq-er preview-sql --config config/examples/insurance_entity.yml --tier fuzzy_name
+
+version: "1.0"
+
+project:
+  name: "insurance_entity_resolution"
+  description: "Resolve insured entities across policy records"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "er_bronze"
+  bq_dataset_silver: "er_silver"
+  bq_dataset_gold: "er_gold"
+  bq_location: "US"
+  watermark_dataset: "er_meta"
+
+# ---------------------------------------------------------------------------
+# Source data
+# ---------------------------------------------------------------------------
+sources:
+  - name: "policy_holders"
+    table: "${BQ_PROJECT}.raw_insurance.insured_entities"
+    unique_key: "record_id"
+    updated_at: "create_date"
+    partition_column: "create_date"
+    batch_size: 2000000
+    entity_type_column: "legal_entity_code"
+    columns:
+      - name: "record_id"
+        type: "STRING"
+      - name: "insured_name"
+        type: "STRING"
+        role: "full_name"
+      - name: "legal_entity_code"
+        type: "STRING"
+        role: "entity_type"
+      - name: "address_line_1"
+        type: "STRING"
+        role: "address_line_1"
+      - name: "city"
+        type: "STRING"
+        role: "city"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip_code"
+        type: "STRING"
+        role: "zip"
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+      - name: "email"
+        type: "STRING"
+        role: "email"
+      - name: "ein"
+        type: "STRING"
+        role: "ein"
+      - name: "carrier_customer_id"
+        type: "STRING"
+      - name: "agency_customer_id"
+        type: "STRING"
+      - name: "carrier_id"
+        type: "STRING"
+      - name: "agency_id"
+        type: "STRING"
+      - name: "create_date"
+        type: "DATE"
+    passthrough_columns:
+      - "policy_id"
+      - "file_id"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+feature_engineering:
+  name_features:
+    enabled: true
+    features:
+      - name: "name_clean"
+        function: "name_clean"
+        input: "insured_name"
+      - name: "name_fingerprint"
+        function: "name_fingerprint"
+        input: "insured_name"
+      - name: "name_soundex"
+        function: "soundex"
+        input: "name_clean"
+      - name: "name_first_letter"
+        function: "first_letter"
+        input: "name_clean"
+      - name: "name_length"
+        function: "char_length"
+        input: "name_clean"
+      - name: "salutation"
+        function: "extract_salutation"
+        input: "insured_name"
+      - name: "name_suffix"
+        function: "extract_suffix"
+        input: "insured_name"
+      - name: "name_no_suffix"
+        function: "strip_suffix"
+        input: "name_clean"
+      - name: "first_word_name"
+        function: "first_word"
+        input: "name_clean"
+      - name: "last_word_name"
+        function: "last_word"
+        input: "name_clean"
+      - name: "name_initials"
+        function: "initials"
+        input: "name_clean"
+      - name: "business_core_name"
+        function: "strip_business_suffix"
+        input: "name_clean"
+
+  address_features:
+    enabled: true
+    features:
+      - name: "address_clean"
+        function: "address_standardize"
+        input: "address_line_1"
+      - name: "street_number"
+        function: "extract_street_number"
+        input: "address_line_1"
+      - name: "street_name"
+        function: "extract_street_name"
+        input: "address_clean"
+      - name: "unit_number"
+        function: "extract_unit_number"
+        input: "address_line_1"
+      - name: "state_clean"
+        function: "upper_trim"
+        input: "state"
+      - name: "city_clean"
+        function: "upper_trim"
+        input: "city"
+      - name: "zip5"
+        function: "left"
+        input: "zip_code"
+        params: { length: 5 }
+      - name: "zip3"
+        function: "left"
+        input: "zip_code"
+        params: { length: 3 }
+      - name: "city_soundex"
+        function: "soundex"
+        input: "city_clean"
+
+  contact_features:
+    enabled: true
+    features:
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+      - name: "phone_area_code"
+        function: "phone_area_code"
+        input: "phone"
+      - name: "phone_last4"
+        function: "right"
+        input: "phone_clean"
+        params: { length: 4 }
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+      - name: "email_dom"
+        function: "email_domain"
+        input: "email"
+      - name: "email_local"
+        function: "email_local_part"
+        input: "email"
+      - name: "email_type"
+        function: "email_domain_type"
+        input: "email"
+      - name: "ein_clean"
+        function: "nullif_empty"
+        input: "ein"
+
+  blocking_keys:
+    - name: "bk_name_zip"
+      function: "farm_fingerprint_concat"
+      inputs: ["name_soundex", "zip5"]
+    - name: "bk_name_state"
+      function: "farm_fingerprint_concat"
+      inputs: ["name_soundex", "state_clean"]
+    - name: "bk_phone"
+      function: "farm_fingerprint"
+      inputs: ["phone_clean"]
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: ["email_clean"]
+    - name: "bk_name_city"
+      function: "farm_fingerprint_concat"
+      inputs: ["name_soundex", "city_clean", "state_clean"]
+    - name: "bk_address"
+      function: "farm_fingerprint_concat"
+      inputs: ["street_number", "zip5"]
+    - name: "bk_ein"
+      function: "farm_fingerprint"
+      inputs: ["ein_clean"]
+    - name: "bk_carrier_name"
+      function: "farm_fingerprint_concat"
+      inputs: ["carrier_customer_id", "name_fingerprint"]
+    - name: "bk_agency_name"
+      function: "farm_fingerprint_concat"
+      inputs: ["agency_customer_id", "name_fingerprint"]
+
+  composite_keys:
+    - name: "ck_name_full_address"
+      function: "farm_fingerprint_concat"
+      inputs: ["name_fingerprint", "address_clean", "city_clean", "state_clean", "zip5"]
+    - name: "ck_carrier_name_addr"
+      function: "farm_fingerprint_concat"
+      inputs: ["carrier_id", "name_fingerprint", "address_clean"]
+    - name: "ck_agency_name_addr"
+      function: "farm_fingerprint_concat"
+      inputs: ["agency_id", "name_fingerprint", "address_clean"]
+
+# ---------------------------------------------------------------------------
+# Embeddings (disabled by default — enable when ML model access is available)
+# ---------------------------------------------------------------------------
+embeddings:
+  enabled: false
+  model: "textembedding-gecko@003"
+  source_columns: ["name_clean", "address_clean", "city_clean", "state_clean"]
+  concat_separator: " | "
+  dimensions: 768
+  lsh:
+    num_hash_tables: 20
+    num_hash_functions_per_table: 8
+    projection_seed: 42
+
+# ---------------------------------------------------------------------------
+# Matching tiers (executed in order, each processes only unmatched records)
+# ---------------------------------------------------------------------------
+matching_tiers:
+
+  # Tier 1: Exact composite key matching
+  - name: "exact_composite"
+    description: "Exact match on name + full standardized address"
+    confidence: 1.0
+    blocking:
+      paths:
+        - keys: ["ck_name_full_address"]
+          candidate_limit: 100
+        - keys: ["ck_carrier_name_addr"]
+          candidate_limit: 50
+        - keys: ["ck_agency_name_addr"]
+          candidate_limit: 50
+    comparisons:
+      - left: "ck_name_full_address"
+        right: "ck_name_full_address"
+        method: "exact"
+        weight: 10.0
+    threshold:
+      method: "sum"
+      min_score: 10.0
+    hard_negatives: []
+    soft_signals: []
+
+  # Tier 2: Exact identifier matching
+  - name: "exact_identifiers"
+    description: "Exact match on strong identifiers + name fingerprint"
+    confidence: 0.95
+    blocking:
+      paths:
+        - keys: ["bk_carrier_name"]
+          candidate_limit: 50
+        - keys: ["bk_agency_name"]
+          candidate_limit: 50
+        - keys: ["bk_ein"]
+          candidate_limit: 50
+        - keys: ["bk_email"]
+          candidate_limit: 50
+    comparisons:
+      - left: "name_fingerprint"
+        right: "name_fingerprint"
+        method: "exact"
+        weight: 5.0
+      - left: "carrier_customer_id"
+        right: "carrier_customer_id"
+        method: "exact"
+        weight: 3.0
+      - left: "email_clean"
+        right: "email_clean"
+        method: "exact_case_insensitive"
+        weight: 3.0
+      - left: "ein_clean"
+        right: "ein_clean"
+        method: "exact"
+        weight: 3.0
+    threshold:
+      method: "sum"
+      min_score: 8.0
+    hard_negatives:
+      - left: "ein_clean"
+        method: "different"
+        action: "disqualify"
+    soft_signals: []
+
+  # Tier 3: Fuzzy name matching (edit distance)
+  - name: "fuzzy_name"
+    description: "Fuzzy matching using edit distance on names with address validation"
+    blocking:
+      paths:
+        - keys: ["bk_name_zip"]
+          candidate_limit: 200
+        - keys: ["bk_name_city"]
+          candidate_limit: 150
+        - keys: ["bk_address"]
+          candidate_limit: 100
+    comparisons:
+      - left: "name_clean"
+        right: "name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.75 }
+        weight: 4.0
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.75 }
+        weight: 3.0
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 2.0
+      - left: "state_clean"
+        right: "state_clean"
+        method: "exact"
+        weight: 1.0
+    threshold:
+      method: "sum"
+      min_score: 8.0
+    hard_negatives:
+      - left: "name_suffix"
+        method: "different"
+        action: "disqualify"
+      - left: "ein_clean"
+        method: "different"
+        action: "disqualify"
+      - left: "name_first_letter"
+        method: "different"
+        action: "penalize"
+        penalty: -3.0
+    soft_signals:
+      - left: "phone_clean"
+        method: "exact"
+        bonus: 2.0
+      - left: "email_dom"
+        method: "exact"
+        bonus: 1.0
+      - left: "phone_area_code"
+        method: "exact"
+        bonus: 0.5
+
+  # Tier 4: Individual in-state relocation
+  - name: "individual_relocation_instate"
+    description: "Same person moved within same state (name + phone + email required)"
+    confidence: 0.92
+    blocking:
+      paths:
+        - keys: ["bk_name_state"]
+          candidate_limit: 300
+        - keys: ["bk_phone"]
+          candidate_limit: 100
+    comparisons:
+      - left: "name_fingerprint"
+        right: "name_fingerprint"
+        method: "exact"
+        weight: 4.0
+      - left: "phone_clean"
+        right: "phone_clean"
+        method: "exact"
+        weight: 4.0
+      - left: "state_clean"
+        right: "state_clean"
+        method: "exact"
+        weight: 2.0
+    threshold:
+      method: "sum"
+      min_score: 10.0
+    hard_negatives:
+      - left: "name_suffix"
+        method: "different"
+        action: "disqualify"
+    soft_signals:
+      - left: "email_clean"
+        method: "exact_case_insensitive"
+        bonus: 3.0
+
+  # Tier 5: Individual cross-state relocation
+  - name: "individual_relocation_crossstate"
+    description: "Same person moved across states (requires name + phone + email)"
+    confidence: 0.85
+    blocking:
+      paths:
+        - keys: ["bk_phone"]
+          candidate_limit: 100
+        - keys: ["bk_email"]
+          candidate_limit: 100
+    comparisons:
+      - left: "name_fingerprint"
+        right: "name_fingerprint"
+        method: "exact"
+        weight: 4.0
+      - left: "phone_clean"
+        right: "phone_clean"
+        method: "exact"
+        weight: 4.0
+      - left: "email_clean"
+        right: "email_clean"
+        method: "exact_case_insensitive"
+        weight: 4.0
+    threshold:
+      method: "sum"
+      min_score: 12.0
+    hard_negatives:
+      - left: "state_clean"
+        method: "exact"
+        action: "disqualify"   # must be DIFFERENT states
+    soft_signals: []
+
+  # Tier 6: Company relocation
+  - name: "company_relocation"
+    description: "Same company relocated within same state (EIN or name+phone+email)"
+    confidence: 0.92
+    blocking:
+      paths:
+        - keys: ["bk_ein"]
+          candidate_limit: 200
+        - keys: ["bk_name_state"]
+          candidate_limit: 200
+    comparisons:
+      - left: "business_core_name"
+        right: "business_core_name"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.85 }
+        weight: 4.0
+      - left: "ein_clean"
+        right: "ein_clean"
+        method: "exact"
+        weight: 5.0
+      - left: "state_clean"
+        right: "state_clean"
+        method: "exact"
+        weight: 2.0
+      - left: "phone_clean"
+        right: "phone_clean"
+        method: "exact"
+        weight: 3.0
+    threshold:
+      method: "sum"
+      min_score: 9.0
+    hard_negatives:
+      - left: "ein_clean"
+        method: "different"
+        action: "disqualify"
+    soft_signals:
+      - left: "email_dom"
+        method: "exact"
+        bonus: 1.5
+
+  # Tier 7: Probabilistic (disabled by default)
+  - name: "probabilistic"
+    description: "Probabilistic matching for remaining candidates"
+    enabled: false
+    blocking:
+      paths:
+        - keys: ["bk_name_zip"]
+          candidate_limit: 500
+    comparisons:
+      - left: "name_clean"
+        right: "name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.7 }
+        weight: 3.0
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.7 }
+        weight: 2.0
+      - left: "city_soundex"
+        right: "city_soundex"
+        method: "exact"
+        weight: 1.0
+      - left: "state_clean"
+        right: "state_clean"
+        method: "exact"
+        weight: 1.0
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 2.0
+    threshold:
+      method: "sum"
+      min_score: 7.0
+    hard_negatives:
+      - left: "name_soundex"
+        method: "different"
+        action: "disqualify"
+    soft_signals:
+      - left: "phone_last4"
+        method: "exact"
+        bonus: 1.5
+      - left: "email_dom"
+        method: "exact"
+        bonus: 0.5
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+    max_iterations: 20
+  canonical_selection:
+    method: "completeness"
+  output:
+    include_match_metadata: true
+    include_passthrough: true
+    entity_id_prefix: "INS"
+    partition_column: "state_clean"
+    cluster_columns: ["name_fingerprint", "zip5"]
+
+# ---------------------------------------------------------------------------
+# Incremental processing
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: true
+  grace_period_hours: 48
+  cursor_columns: ["create_date"]
+  batch_size: 2000000
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  log_level: "INFO"
+  log_format: "json"
+  metrics:
+    enabled: true
+    destination: "bigquery"
+  profiling:
+    enabled: false

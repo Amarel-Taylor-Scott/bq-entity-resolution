@@ -1,0 +1,384 @@
+# Retail / E-Commerce Customer Identity Matching
+# ===========================================================================
+#
+# Resolves customer identities across retail and e-commerce channels.
+# Omnichannel retailers often have separate customer databases for in-store
+# POS, online/web, mobile app, and loyalty program systems. A single
+# customer may have a loyalty card, a web account, and an in-store profile
+# -- each with slightly different contact details. Without identity
+# resolution, the retailer cannot build a unified customer view for
+# personalization, accurate lifetime value calculation, or marketing
+# attribution across channels.
+#
+# Matching strategy (two tiers):
+#   1. exact   -- Deterministic match on email or loyalty ID
+#   2. fuzzy   -- Fuzzy name + address + phone for guests and partial records
+#
+# Key identifiers:
+#   loyalty_id    -- Rewards/loyalty program member number
+#   customer_id   -- Channel-specific customer identifier
+#   email         -- Primary digital identity (strongest cross-channel link)
+#   phone         -- Secondary contact identifier
+#
+# Usage:
+#   bq-er validate --config config/examples/retail_customer.yml
+#   bq-er preview-sql --config config/examples/retail_customer.yml --tier exact --stage all
+#   bq-er run --config config/examples/retail_customer.yml --dry-run
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Project: dataset routing
+# ---------------------------------------------------------------------------
+project:
+  name: "retail_customer_dedup"
+  description: "Unify customer identities across retail and e-commerce channels"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "retail_bronze"
+  bq_dataset_silver: "retail_silver"
+  bq_dataset_gold: "retail_gold"
+  bq_location: "US"
+  watermark_dataset: "retail_meta"
+
+# ---------------------------------------------------------------------------
+# Source: customer records from omnichannel systems
+# ---------------------------------------------------------------------------
+sources:
+  - name: "customers"
+    table: "${BQ_PROJECT}.raw_retail.customer_records"
+    unique_key: "record_id"
+    updated_at: "last_activity"
+    columns:
+      - name: "record_id"
+        type: "STRING"
+      - name: "loyalty_id"
+        type: "STRING"
+        # Loyalty/rewards program member number. Customers who enrolled
+        # in the loyalty program have this ID consistently across channels.
+        # Many guest checkout records will have this as NULL.
+      - name: "customer_id"
+        type: "STRING"
+        # Channel-specific customer identifier (e.g., web account ID,
+        # POS customer code). Not globally unique across channels.
+      - name: "email"
+        type: "STRING"
+        role: "email"
+        # Email is the strongest cross-channel identifier. Customers
+        # typically use the same email for web, app, and loyalty sign-up.
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+      - name: "first_name"
+        type: "STRING"
+        role: "first_name"
+      - name: "last_name"
+        type: "STRING"
+        role: "last_name"
+      - name: "address"
+        type: "STRING"
+        role: "address_line_1"
+        # Shipping or billing address. Varies across orders --
+        # customers may use home, work, or gift addresses.
+      - name: "city"
+        type: "STRING"
+        role: "city"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip"
+        type: "STRING"
+        role: "zip"
+      - name: "channel"
+        type: "STRING"
+        # Originating channel: WEB, APP, POS, CALL_CENTER.
+      - name: "last_activity"
+        type: "TIMESTAMP"
+    passthrough_columns:
+      - "channel"
+      - "customer_id"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+feature_engineering:
+
+  # --- Name features ---
+  name_features:
+    enabled: true
+    features:
+      - name: "first_name_clean"
+        function: "name_clean"
+        input: "first_name"
+      - name: "last_name_clean"
+        function: "name_clean"
+        input: "last_name"
+      - name: "first_name_soundex"
+        function: "soundex"
+        input: "first_name_clean"
+      - name: "last_name_soundex"
+        function: "soundex"
+        input: "last_name_clean"
+      - name: "first_initial"
+        function: "first_letter"
+        input: "first_name_clean"
+      - name: "nickname_key"
+        function: "nickname_match_key"
+        input: "first_name_clean"
+        # Maps common nicknames: "Mike" -> "MICHAEL", "Liz" -> "ELIZABETH".
+
+  # --- Address features ---
+  address_features:
+    enabled: true
+    features:
+      - name: "address_clean"
+        function: "address_standardize"
+        input: "address"
+      - name: "city_clean"
+        function: "upper_trim"
+        input: "city"
+      - name: "state_clean"
+        function: "upper_trim"
+        input: "state"
+      - name: "zip5"
+        function: "left"
+        input: "zip"
+        params: { length: 5 }
+
+  # --- Contact features ---
+  contact_features:
+    enabled: true
+    features:
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+      - name: "email_domain"
+        function: "email_domain"
+        input: "email"
+      - name: "loyalty_id_clean"
+        function: "upper_trim"
+        input: "loyalty_id"
+
+  # --- Blocking keys ---
+  # Retail blocking strategy:
+  #   bk_email      -- Email address (strongest cross-channel link)
+  #   bk_loyalty    -- Loyalty program ID
+  #   bk_phone      -- Phone number
+  #   bk_name_zip   -- Last name phonetic + ZIP for geographic clustering
+  #   bk_name_state -- Full name phonetic + state for broader recall
+  blocking_keys:
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: ["email_clean"]
+      # Email is the most reliable cross-channel identifier.
+
+    - name: "bk_loyalty"
+      function: "farm_fingerprint"
+      inputs: ["loyalty_id_clean"]
+      # Loyalty ID directly links records across channels.
+
+    - name: "bk_phone"
+      function: "farm_fingerprint"
+      inputs: ["phone_clean"]
+      # Phone number -- useful for in-store customers who may not
+      # have provided an email.
+
+    - name: "bk_name_zip"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "zip5"]
+      # Last name + ZIP for fuzzy geographic matching.
+
+    - name: "bk_name_state"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "first_name_soundex", "state_clean"]
+      # Full name phonetic + state for broader recall.
+
+  # --- Composite keys ---
+  composite_keys:
+    - name: "ck_email_name"
+      function: "farm_fingerprint_concat"
+      inputs: ["email_clean", "last_name_clean"]
+      # Email + last name -- near-unique identity for the exact tier.
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+matching_tiers:
+
+  # -------------------------------------------------------------------------
+  # Tier 1: Exact match on email or loyalty ID
+  # -------------------------------------------------------------------------
+  # Email is the strongest cross-channel identifier in retail. Loyalty ID
+  # provides a direct deterministic link. Name is checked to prevent
+  # matching shared/family email accounts.
+  - name: "exact"
+    description: "Deterministic match on email or loyalty ID with name verification"
+    confidence: 1.0
+    blocking:
+      paths:
+        - keys: ["bk_email"]
+          candidate_limit: 50
+        - keys: ["bk_loyalty"]
+          candidate_limit: 30
+        - keys: ["ck_email_name"]
+          candidate_limit: 30
+    comparisons:
+      - left: "email_clean"
+        right: "email_clean"
+        method: "exact_case_insensitive"
+        weight: 5.0
+        # Email exact match -- primary cross-channel identifier.
+
+      - left: "loyalty_id_clean"
+        right: "loyalty_id_clean"
+        method: "exact"
+        weight: 5.0
+        # Loyalty ID exact match -- deterministic link.
+
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein"
+        params: { max_distance: 2 }
+        weight: 3.0
+        # Name verification with minor typo tolerance.
+
+    threshold:
+      method: "sum"
+      min_score: 8.0
+      # Email (5) + name (3) = 8, or loyalty (5) + name (3) = 8.
+
+    hard_negatives:
+      - left: "last_name_clean"
+        method: "different"
+        action: "penalize"
+        penalty: -4.0
+        # Completely different last names on a shared email/loyalty ID
+        # suggests a family account -- penalize heavily but do not
+        # disqualify (married couples may share accounts).
+
+    soft_signals:
+      - left: "phone_clean"
+        method: "exact"
+        bonus: 1.5
+        # Same phone confirms same household at minimum.
+
+  # -------------------------------------------------------------------------
+  # Tier 2: Fuzzy name + address + phone matching
+  # -------------------------------------------------------------------------
+  # Catches guest checkout records and customers who used different emails
+  # or did not provide a loyalty ID. Uses fuzzy name matching with address
+  # and phone as supporting signals.
+  - name: "fuzzy"
+    description: "Fuzzy name + address + phone for guest and partial records"
+    confidence: 0.85
+    blocking:
+      paths:
+        - keys: ["bk_name_zip"]
+          candidate_limit: 200
+        - keys: ["bk_name_state"]
+          candidate_limit: 150
+        - keys: ["bk_phone"]
+          candidate_limit: 100
+    comparisons:
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.80 }
+        weight: 2.5
+        # Fuzzy first name -- handles "Katherine" vs "Kathy" edge cases.
+
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.80 }
+        weight: 3.0
+        # Fuzzy last name with typo tolerance.
+
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.70 }
+        weight: 2.0
+        # Address similarity -- shipping addresses may vary per order.
+
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 1.5
+        # ZIP code match confirms geographic proximity.
+
+      - left: "phone_clean"
+        right: "phone_clean"
+        method: "exact"
+        weight: 2.5
+        # Phone match -- strong supporting signal for identity.
+
+    threshold:
+      method: "sum"
+      min_score: 8.0
+      # Name (5.5) + address (2) + zip (1.5) = 9.0, or
+      # Name (5.5) + phone (2.5) = 8.0.
+
+    hard_negatives:
+      - left: "first_initial"
+        method: "different"
+        action: "penalize"
+        penalty: -2.0
+        # Different first initials are a moderate negative signal.
+
+    soft_signals:
+      - left: "email_clean"
+        method: "exact_case_insensitive"
+        bonus: 3.0
+        # Email match in the fuzzy tier is strong confirmation.
+
+      - left: "nickname_key"
+        method: "exact"
+        bonus: 1.5
+        # Nickname canonical form match (Mike/Michael, Liz/Elizabeth).
+
+      - left: "email_domain"
+        method: "exact"
+        bonus: 0.3
+        # Same email domain -- very weak signal.
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+    max_iterations: 15
+  canonical_selection:
+    method: "completeness"
+    # Most complete record becomes the canonical customer profile.
+    # Typically the loyalty-enrolled record with full demographics.
+  output:
+    include_match_metadata: true
+    include_passthrough: true
+    entity_id_prefix: "RET"
+    # Resolved customer IDs: RET_000001, RET_000002, etc.
+
+# ---------------------------------------------------------------------------
+# Incremental processing
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: true
+  grace_period_hours: 12
+  cursor_columns: ["last_activity"]
+  batch_size: 2000000
+  # Retail datasets can be large (millions of guest checkouts).
+  # 2M per batch balances throughput with BigQuery cost.
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  log_level: "INFO"
+  log_format: "json"
+  metrics:
+    enabled: true
+    destination: "bigquery"

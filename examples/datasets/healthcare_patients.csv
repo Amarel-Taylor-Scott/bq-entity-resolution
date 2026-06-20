@@ -1,0 +1,21 @@
+id,first_name,last_name,email,phone,date_of_birth,mrn,address_line_1,city,state,zip,updated_at
+1,Jennifer,Martinez,jennifer.martinez@gmail.com,555-401-2233,1985-03-14,MRN001234,200 Elm St,Denver,CO,80202,2024-01-01 00:00:00
+2,Jenny,Martinez,j.martinez@gmail.com,(555) 401-2233,1985-03-14,MRN001234,200 Elm Street,Denver,CO,80202,2024-01-05 00:00:00
+3,Jennifer,Martines,jennifer.martinez@gmail.com,5554012233,03/14/1985,MRN001234,200 Elm St Apt 2,Denver,CO,80202,2024-01-12 00:00:00
+4,William,Chen,william.chen@outlook.com,555-780-9100,1972-08-22,MRN005891,45 Oak Ave,Portland,OR,97201,2024-01-01 00:00:00
+5,Bill,Chen,wchen@outlook.com,555-780-9100,1972-08-22,MRN005891,45 Oak Avenue,Portland,OR,97201,2024-01-07 00:00:00
+6,William,Chen,william.chen@outlook.com,(555) 780-9101,1972-08-22,MRN009324,45 Oak Ave,Portland,OR,97201,2024-01-15 00:00:00
+7,Samantha,O'Brien,sobrien@mercy.org,555-312-6644,1990-11-05,MRN102477,830 Maple Dr,Chicago,IL,60614,2024-01-01 00:00:00
+8,Sam,OBrien,samantha.obrien@mercy.org,555-312-6644,1990-11-05,MRN102477,830 Maple Drive,Chicago,IL,60614,2024-01-09 00:00:00
+9,Samantha,O'Brien,sobrien@mercy.org,(555) 312-6644,1990-05-11,MRN204811,830 Maple Dr,Chicago,IL,60614,2024-01-18 00:00:00
+10,David,Nakamura,david.nakamura@proton.me,555-225-8877,1968-06-30,MRN034510,112 River Rd,Austin,TX,78701,2024-01-01 00:00:00
+11,David,Nakamura,dnakamura@proton.me,(555) 225-8877,1968-06-30,MRN034510,112 River Road,Austin,TX,78701,2024-01-06 00:00:00
+12,Dave,Nakamora,david.nakamura@proton.me,5552258877,1968-06-30,MRN078122,112 River Rd Unit 3,Austin,TX,78701,2024-01-14 00:00:00
+13,Maria,Gonzalez,maria.gonzalez@yahoo.com,555-493-1120,1995-02-28,MRN067823,505 Pine Ln,Miami,FL,33130,2024-01-01 00:00:00
+14,Maria,Gonzales,mgonzalez@yahoo.com,555-493-1120,1995-02-28,MRN067823,505 Pine Lane,Miami,FL,33130,2024-01-08 00:00:00
+15,Robert,Thompson,robert.thompson@live.com,555-661-3344,1980-12-01,MRN088456,77 Birch Ct,Seattle,WA,98101,2024-01-01 00:00:00
+16,Bob,Thompson,rthompson@live.com,(555) 661-3344,1980-12-01,MRN088456,77 Birch Court,Seattle,WA,98101,2024-01-10 00:00:00
+17,Robert,Thomson,robert.thompson@live.com,5556613344,1980-12-01,MRN091203,77 Birch Ct,Seattle,WA,98101,2024-01-19 00:00:00
+18,Jennifer,Martinez,jen.martinez@hotmail.com,555-902-7766,1993-07-21,MRN115540,1400 Central Ave,Boston,MA,02108,2024-01-03 00:00:00
+19,David,Nakamura,david.n@corp.net,555-330-4455,1988-04-10,MRN129087,600 Walnut St,Philadelphia,PA,19103,2024-01-04 00:00:00
+20,Priya,Sharma,priya.sharma@icloud.com,555-847-2290,1991-09-17,MRN143200,310 Cedar Blvd,San Francisco,CA,94105,2024-01-02 00:00:00

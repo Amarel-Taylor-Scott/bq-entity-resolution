@@ -1,0 +1,687 @@
+# Healthcare Patient Deduplication Configuration
+# ================================================
+#
+# Resolves patient identities across multiple hospital systems (EHRs).
+# Healthcare entity resolution is among the most critical dedup domains:
+# duplicate patient records lead to fragmented care, medication errors,
+# and billing discrepancies. HIPAA compliance requires that all data
+# remain in BigQuery — no PHI leaves the warehouse.
+#
+# This pipeline uses a 3-tier cascading strategy:
+#   1. Exact SSN + Name — deterministic, highest confidence
+#   2. Fuzzy Name + DOB + Address — catches typos, name changes, relocations
+#   3. Probabilistic — Fellegi-Sunter scoring on multiple soft signals
+#
+# Columns modeled: first_name, last_name, dob, ssn, mrn (medical record
+# number), npi (referring provider), address, phone, email.
+#
+# Usage:
+#   bq-er validate --config config/examples/healthcare_patient.yml
+#   bq-er preview-sql --config config/examples/healthcare_patient.yml --tier exact_ssn --stage all
+#   bq-er run --config config/examples/healthcare_patient.yml --dry-run
+
+version: "1.0"
+
+# ---------------------------------------------------------------------------
+# Project: dataset routing for bronze / silver / gold layers
+# ---------------------------------------------------------------------------
+project:
+  name: "healthcare_patient_dedup"
+  description: "Deduplicate patient records across hospital EHR systems"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "patient_bronze"   # Staging tables (raw ingestion)
+  bq_dataset_silver: "patient_silver"   # Feature, candidate, and match tables
+  bq_dataset_gold: "patient_gold"       # Final resolved patient master index
+  bq_location: "US"
+  watermark_dataset: "patient_meta"     # Watermark + checkpoint persistence
+
+# ---------------------------------------------------------------------------
+# Source: patient records from a consolidated EHR feed
+# ---------------------------------------------------------------------------
+# In practice, you may have multiple sources (one per hospital system).
+# This example uses a single consolidated table; add additional sources
+# under the `sources` list to perform cross-system linkage.
+sources:
+  - name: "patients"
+    table: "${BQ_PROJECT}.raw_ehr.patient_records"
+    unique_key: "patient_record_id"
+    updated_at: "last_updated"
+    columns:
+      - name: "patient_record_id"
+        type: "STRING"
+      - name: "first_name"
+        type: "STRING"
+        role: "first_name"
+      - name: "last_name"
+        type: "STRING"
+        role: "last_name"
+      - name: "dob"
+        type: "DATE"
+        # Date of birth — critical anchor for patient matching.
+        # Exact DOB match is one of the strongest signals. Even a 1-day
+        # error (e.g., timezone-related birth date shift) should be caught
+        # by the fuzzy tier's date_within_days comparison.
+      - name: "ssn"
+        type: "STRING"
+        # Social Security Number — strongest unique identifier when present.
+        # Often missing or partially collected (last 4 only). SSN mismatches
+        # between two records are a hard negative (disqualification).
+      - name: "mrn"
+        type: "STRING"
+        # Medical Record Number — facility-specific identifier. Two patients
+        # at the same hospital should never share an MRN, but MRNs are NOT
+        # unique across hospitals. Used as a blocking key within a facility.
+      - name: "npi"
+        type: "STRING"
+        # National Provider Identifier of the referring/attending provider.
+        # 10-digit number. Useful as a soft signal: patients seen by the
+        # same provider in the same region are more likely to be the same
+        # person (especially in specialty clinics).
+      - name: "address"
+        type: "STRING"
+        role: "address_line_1"
+      - name: "city"
+        type: "STRING"
+        role: "city"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip"
+        type: "STRING"
+        role: "zip"
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+      - name: "email"
+        type: "STRING"
+        role: "email"
+      - name: "source_system"
+        type: "STRING"
+        # Identifies the originating hospital/EHR system.
+        # Passed through to gold output for provenance tracking.
+      - name: "last_updated"
+        type: "TIMESTAMP"
+    passthrough_columns:
+      - "source_system"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+# Healthcare-specific cleaning:
+# - SSN: strip dashes/spaces → 9-digit string (ssn_clean), extract last 4 (ssn_last_four)
+# - MRN: strip non-alphanum + leading zeros (mrn_clean)
+# - NPI: validate 10-digit format (npi_validate) — returns NULL if invalid
+# - DOB: extract birth year for composite blocking keys (dob_year)
+# - Names: standard name_clean + soundex for phonetic blocking
+# - Phone: phone_standardize → digits-only for exact matching
+feature_engineering:
+
+  # --- Name features ---
+  name_features:
+    enabled: true
+    features:
+      - name: "first_name_clean"
+        function: "name_clean"
+        input: "first_name"
+      - name: "last_name_clean"
+        function: "name_clean"
+        input: "last_name"
+      - name: "first_name_soundex"
+        function: "soundex"
+        input: "first_name_clean"
+      - name: "last_name_soundex"
+        function: "soundex"
+        input: "last_name_clean"
+      - name: "first_initial"
+        function: "first_letter"
+        input: "first_name_clean"
+      - name: "nickname_key"
+        function: "nickname_match_key"
+        input: "first_name_clean"
+        # Maps common nicknames to canonical form:
+        # "Bill" -> "WILLIAM", "Bob" -> "ROBERT", etc.
+        # Useful for catching patients who register under different
+        # name variants at different facilities.
+
+  # --- Address features ---
+  address_features:
+    enabled: true
+    features:
+      - name: "address_clean"
+        function: "address_standardize"
+        input: "address"
+      - name: "city_clean"
+        function: "upper_trim"
+        input: "city"
+      - name: "state_clean"
+        function: "upper_trim"
+        input: "state"
+      - name: "zip5"
+        function: "left"
+        input: "zip"
+        params: { length: 5 }
+      - name: "zip3"
+        function: "left"
+        input: "zip"
+        params: { length: 3 }
+
+  # --- Contact features ---
+  contact_features:
+    enabled: true
+    features:
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+      - name: "email_domain"
+        function: "email_domain"
+        input: "email"
+
+  # --- Healthcare-specific identifier features ---
+  # These use domain-specific functions from the industry_features and
+  # date_identity_features registries.
+  extra_groups:
+    identity_features:
+      enabled: true
+      features:
+        - name: "ssn_clean"
+          function: "ssn_clean"
+          input: "ssn"
+          # Strips dashes and spaces: "123-45-6789" -> "123456789"
+        - name: "ssn_last4"
+          function: "ssn_last_four"
+          input: "ssn"
+          # Last 4 digits of SSN — commonly collected even when full SSN
+          # is not. Also serves as a blocking key that avoids storing
+          # full SSN in intermediate tables.
+        - name: "mrn_clean"
+          function: "mrn_clean"
+          input: "mrn"
+          # Strips non-alphanumeric chars and leading zeros.
+          # "MRN-0012345" -> "MRN12345"
+        - name: "npi_clean"
+          function: "npi_validate"
+          input: "npi"
+          # Validates 10-digit format; returns NULL for invalid NPIs.
+          # Protects against garbage data poisoning blocking keys.
+        - name: "birth_year"
+          function: "dob_year"
+          input: "dob"
+          # Year of birth — combined with soundex for a blocking key
+          # that partitions the population effectively (~4M births/year
+          # in the US, further narrowed by soundex).
+        - name: "dob_mmdd"
+          function: "dob_mmdd"
+          input: "dob"
+          # Month+Day from DOB as MMDD string — catches transposition
+          # of year digits while still matching on month/day.
+
+  # --- Blocking keys ---
+  # Blocking keys reduce the candidate pair space from O(N^2) to a
+  # manageable size. Healthcare blocking must balance:
+  #   - Sensitivity: must not miss true matches (patient safety)
+  #   - Specificity: must not generate too many false candidates (cost)
+  #
+  # Strategy:
+  #   bk_ssn_last4    — Direct SSN-based blocking (strongest signal)
+  #   bk_dob_soundex  — Birth year + last name phonetic (broad recall)
+  #   bk_name_zip     — Last name + ZIP (geographic clustering)
+  #   bk_phone        — Phone number (catches name changes)
+  #   bk_email        — Email address (catches address changes)
+  #   bk_mrn          — MRN within same system (facility-level dedup)
+  blocking_keys:
+    - name: "bk_ssn_last4"
+      function: "farm_fingerprint"
+      inputs: ["ssn_last4"]
+      # SSN last-4 is a high-selectivity key: ~10,000 possible values.
+      # Combined with any name signal in comparisons, this catches the
+      # vast majority of true duplicates where SSN is present.
+
+    - name: "bk_dob_soundex"
+      function: "farm_fingerprint_concat"
+      inputs: ["birth_year", "last_name_soundex"]
+      # Birth year (~100 values) x soundex (~26K values) creates ~2.6M
+      # buckets — effective at limiting candidate pairs while maintaining
+      # high recall for phonetically similar names born in the same year.
+
+    - name: "bk_name_zip"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "zip5"]
+      # Last name phonetic + ZIP code. Catches patients at the same
+      # address with consistent last names, even when DOB or SSN differ.
+
+    - name: "bk_phone"
+      function: "farm_fingerprint"
+      inputs: ["phone_clean"]
+      # Phone number as blocking key. Critical for catching patients
+      # who changed their name (marriage, legal name change) but kept
+      # the same phone number.
+
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: ["email_clean"]
+      # Email as blocking key. Useful when patients use the same email
+      # across different hospital systems (e.g., patient portal logins).
+
+    - name: "bk_mrn"
+      function: "farm_fingerprint"
+      inputs: ["mrn_clean"]
+      # MRN-based blocking — primarily useful for within-facility dedup
+      # where the same MRN may have been assigned to records that later
+      # diverged due to registration errors.
+
+  # --- Composite keys ---
+  # High-selectivity keys for deterministic exact matching.
+  composite_keys:
+    - name: "ck_ssn_name"
+      function: "farm_fingerprint_concat"
+      inputs: ["ssn_clean", "last_name_clean", "first_name_clean"]
+      # SSN + full name: near-unique identifier. When this matches
+      # exactly, the records almost certainly refer to the same patient.
+
+    - name: "ck_name_dob_zip"
+      function: "farm_fingerprint_concat"
+      inputs: ["first_name_clean", "last_name_clean", "dob", "zip5"]
+      # Name + DOB + ZIP: strong identity signal for patients without SSN.
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+# Three tiers, executed in cascading order. Each tier processes only
+# record pairs NOT already matched by a previous tier.
+#
+# Healthcare matching rationale:
+#   Tier 1 (exact_ssn): SSN is the gold standard identifier. When both
+#     records have an SSN and the SSNs match along with the name, this
+#     is a definitive match. SSN mismatches are disqualifying.
+#   Tier 2 (fuzzy): Many records lack SSN. This tier uses fuzzy name
+#     matching + DOB proximity + address similarity to catch duplicates
+#     with data entry errors, nicknames, or slight address variations.
+#   Tier 3 (probabilistic): For remaining ambiguous pairs, Fellegi-Sunter
+#     scoring combines multiple weak signals (phone, email, provider,
+#     address components) into a single match probability.
+matching_tiers:
+
+  # -----------------------------------------------------------------------
+  # Tier 1: Exact SSN + Name match
+  # -----------------------------------------------------------------------
+  # Highest confidence. SSN match combined with exact name is definitive.
+  # Hard negative: if SSNs are both present but different, disqualify
+  # immediately — this prevents merging distinct individuals who happen
+  # to share a name.
+  - name: "exact_ssn"
+    description: "Deterministic match on SSN + exact name (highest confidence)"
+    confidence: 1.0
+    blocking:
+      paths:
+        - keys: ["ck_ssn_name"]
+          candidate_limit: 50
+          # SSN+name composite key: very few collisions expected.
+        - keys: ["bk_ssn_last4"]
+          candidate_limit: 100
+          # Broader blocking on SSN last-4 to catch slight name
+          # variations that prevent composite key match.
+    comparisons:
+      - left: "ssn_clean"
+        right: "ssn_clean"
+        method: "exact"
+        weight: 8.0
+        # SSN exact match: extremely strong signal.
+        # Only ~0.001% of the US population shares an SSN.
+
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "exact"
+        weight: 3.0
+        # Last name exact match provides name confirmation.
+
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "exact"
+        weight: 2.0
+        # First name exact match. Combined with SSN + last name,
+        # this creates a near-certain identity assertion.
+
+    threshold:
+      method: "sum"
+      min_score: 13.0
+      # Requires SSN (8) + last name (3) + first name (2) = 13.
+      # All three must match exactly.
+
+    hard_negatives:
+      - left: "ssn_clean"
+        method: "different"
+        action: "disqualify"
+        # If both records have an SSN and they differ, this pair
+        # is NOT a match regardless of name similarity. This guard
+        # prevents merging family members at the same address.
+
+    soft_signals: []
+
+  # -----------------------------------------------------------------------
+  # Tier 2: Fuzzy name + DOB + address matching
+  # -----------------------------------------------------------------------
+  # Catches duplicates where SSN is missing or only partially available.
+  # Uses fuzzy string matching on names (Levenshtein), DOB proximity
+  # (within 30 days to handle timezone-related date shifts and transposed
+  # digits), and address similarity.
+  - name: "fuzzy"
+    description: "Fuzzy name matching with DOB proximity and address similarity"
+    confidence: 0.92
+    blocking:
+      paths:
+        - keys: ["bk_dob_soundex"]
+          candidate_limit: 200
+          # Birth year + last name phonetic: broad recall for name
+          # variants born in the same year.
+        - keys: ["bk_name_zip"]
+          candidate_limit: 200
+          # Last name + ZIP: catches patients at the same address.
+        - keys: ["bk_phone"]
+          candidate_limit: 100
+          # Phone: catches name changes (marriage, legal).
+    comparisons:
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.80 }
+        weight: 3.0
+        # Normalized edit distance on last name. Threshold of 0.80
+        # allows ~1 edit per 5 characters (e.g., SMITH vs SMYTH).
+
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.75 }
+        weight: 3.0
+        # Slightly looser threshold on first name to account for
+        # nicknames and abbreviations (e.g., ROBERT vs ROB).
+
+      - left: "dob"
+        right: "dob"
+        method: "date_within_days"
+        params: { days: 30 }
+        weight: 4.0
+        # DOB within 30 days. Handles:
+        # - Timezone-related shifts (born 11:55 PM EST → next day UTC)
+        # - Month/day transposition errors (03/12 vs 12/03 within window)
+        # - Intentional fudging for privacy at registration
+
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.70 }
+        weight: 2.0
+        # Address similarity. Looser threshold because address
+        # formatting varies widely across hospital systems
+        # (e.g., "123 Main St Apt 4" vs "123 MAIN STREET #4").
+
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 1.5
+        # ZIP code exact match confirms geographic proximity.
+
+    threshold:
+      method: "sum"
+      min_score: 9.0
+      # Typical match scenario:
+      # - Last name fuzzy (3) + first name fuzzy (3) + DOB (4) = 10.0
+      # - Even without address, name + DOB is sufficient.
+      # - With address (2) + zip (1.5), weaker name match can still clear.
+
+    hard_negatives:
+      - left: "ssn_clean"
+        method: "different"
+        action: "disqualify"
+        # SSN mismatch is always disqualifying, even in the fuzzy tier.
+
+      - left: "dob"
+        method: "different"
+        action: "penalize"
+        penalty: -5.0
+        # Completely different DOB is a strong contra-indicator.
+        # Unlike disqualification, this allows override by very strong
+        # matching signals (e.g., SSN + name + address all match but
+        # DOB was entered incorrectly at one facility).
+
+      - left: "first_initial"
+        method: "different"
+        action: "penalize"
+        penalty: -2.0
+        # Different first initials are a moderate red flag.
+
+    soft_signals:
+      - left: "phone_clean"
+        method: "exact"
+        bonus: 2.0
+        # Matching phone number provides additional confirmation.
+
+      - left: "email_clean"
+        method: "exact_case_insensitive"
+        bonus: 2.0
+        # Matching email is a strong identity signal.
+
+      - left: "nickname_key"
+        method: "exact"
+        bonus: 1.5
+        # Nickname canonical form match (Bill/William, Bob/Robert).
+        # Provides a bonus even when raw first names differ.
+
+  # -----------------------------------------------------------------------
+  # Tier 3: Probabilistic (Fellegi-Sunter scoring)
+  # -----------------------------------------------------------------------
+  # For remaining unmatched pairs, applies Fellegi-Sunter log-likelihood
+  # scoring across multiple weak signals. This tier uses EM-estimated
+  # m/u probabilities and multi-level comparison outcomes.
+  #
+  # Fellegi-Sunter rationale:
+  #   Each comparison field contributes log2(m/u) when matched and
+  #   log2((1-m)/(1-u)) when unmatched. The sum determines whether
+  #   the pair exceeds the match threshold.
+  - name: "probabilistic"
+    description: "Fellegi-Sunter probabilistic scoring with multiple soft signals"
+    confidence: 0.80
+    blocking:
+      paths:
+        - keys: ["bk_dob_soundex"]
+          candidate_limit: 300
+        - keys: ["bk_name_zip"]
+          candidate_limit: 300
+        - keys: ["bk_email"]
+          candidate_limit: 200
+        - keys: ["bk_phone"]
+          candidate_limit: 200
+        # Broader blocking with higher candidate limits for maximum recall.
+        # The probabilistic scorer handles false positives via thresholds.
+    comparisons:
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "jaro_winkler"
+        levels:
+          - label: "exact"
+            method: "exact"
+            # m/u estimated by EM; exact first name is a moderate signal
+            # because first names have higher frequency overlap than SSNs.
+          - label: "fuzzy_high"
+            method: "jaro_winkler"
+            params: { threshold: 0.90 }
+          - label: "fuzzy_low"
+            method: "jaro_winkler"
+            params: { threshold: 0.75 }
+          - label: "else"
+
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein"
+        levels:
+          - label: "exact"
+            method: "exact"
+          - label: "fuzzy"
+            method: "levenshtein"
+            params: { max_distance: 2 }
+          - label: "else"
+
+      - left: "dob"
+        right: "dob"
+        method: "exact"
+        levels:
+          - label: "exact"
+            method: "exact"
+            # DOB exact match: very strong signal (m ~ 0.95, u ~ 0.003).
+          - label: "close"
+            method: "date_within_days"
+            params: { days: 30 }
+            # Near-match on DOB: moderate signal.
+          - label: "else"
+
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        levels:
+          - label: "exact"
+            method: "exact"
+          - label: "else"
+
+      - left: "phone_clean"
+        right: "phone_clean"
+        method: "exact"
+        levels:
+          - label: "exact"
+            method: "exact"
+          - label: "else"
+
+      - left: "email_clean"
+        right: "email_clean"
+        method: "exact_case_insensitive"
+        levels:
+          - label: "exact"
+            method: "exact_case_insensitive"
+          - label: "else"
+
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        levels:
+          - label: "exact"
+            method: "exact"
+          - label: "fuzzy"
+            method: "levenshtein_normalized"
+            params: { threshold: 0.75 }
+          - label: "else"
+
+    threshold:
+      method: "fellegi_sunter"
+      match_threshold: 8.0
+      # Fellegi-Sunter log-likelihood threshold. A score of 8.0 means
+      # the combined evidence is 2^8 = 256x more likely under the match
+      # hypothesis than the non-match hypothesis.
+
+    training:
+      method: "em"
+      em_max_iterations: 20
+      em_convergence_threshold: 0.001
+      em_sample_size: 100000
+      # EM auto-estimates m/u probabilities from unlabeled candidate pairs.
+      # No manual m/u values needed on comparison levels.
+
+    hard_negatives:
+      - left: "ssn_clean"
+        method: "different"
+        action: "disqualify"
+        # SSN mismatch is always disqualifying across all tiers.
+
+    soft_signals:
+      - left: "npi_clean"
+        method: "exact"
+        bonus: 1.0
+        # Same referring provider is a weak but useful signal:
+        # patients in a specialty clinic are more likely to be
+        # duplicates than patients across unrelated providers.
+
+      - left: "dob_mmdd"
+        method: "exact"
+        bonus: 0.5
+        # Month+day match (ignoring year) — catches year-transposition
+        # errors (e.g., 1978 vs 1987) that the main DOB comparison misses.
+
+      - left: "email_domain"
+        method: "exact"
+        bonus: 0.3
+        # Same email domain is a very weak signal but contributes
+        # marginally in the probabilistic framework.
+
+    active_learning:
+      enabled: true
+      review_queue_table: "${BQ_PROJECT}.er_silver.al_review_queue_probabilistic"
+      queue_size: 500
+      uncertainty_window: 0.15
+      # Generate a review queue of 500 borderline pairs for manual
+      # adjudication by health information management (HIM) staff.
+      # This feedback loop improves m/u estimates over time.
+
+# ---------------------------------------------------------------------------
+# Reconciliation: clustering and canonical output
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  # Tier priority means higher-confidence tiers (exact_ssn) take
+  # precedence. If tier 1 matched A-B and tier 3 matched A-C,
+  # all three merge into one cluster via connected components.
+
+  clustering:
+    method: "connected_components"
+    max_iterations: 30
+    # Connected components finds all transitive links:
+    # if A=B and B=C, then {A, B, C} form one cluster.
+    # max_iterations=30 handles deep chains (e.g., patient with 30+
+    # records across facilities over decades of care).
+
+  canonical_selection:
+    method: "completeness"
+    # The canonical record is the one with the most non-null fields.
+    # In healthcare, this is typically the most recent registration
+    # where the patient provided complete demographics.
+
+  output:
+    include_match_metadata: true
+    include_passthrough: true
+    entity_id_prefix: "PAT"
+    # Gold output entity IDs: PAT_000001, PAT_000002, etc.
+    # These become the Enterprise Master Patient Index (EMPI) IDs.
+
+# ---------------------------------------------------------------------------
+# Incremental processing
+# ---------------------------------------------------------------------------
+# Healthcare EHRs produce continuous feeds. Incremental processing
+# avoids reprocessing the entire patient population on each run.
+incremental:
+  enabled: true
+  grace_period_hours: 24
+  # 24-hour grace period re-processes records from the last day to
+  # catch late-arriving updates and retroactive corrections.
+  cursor_columns: ["last_updated"]
+  batch_size: 500000
+  # 500K records per batch. Adjust based on your BigQuery slot
+  # allocation and cost budget.
+
+# ---------------------------------------------------------------------------
+# Monitoring
+# ---------------------------------------------------------------------------
+monitoring:
+  log_level: "INFO"
+  log_format: "json"
+  metrics:
+    enabled: true
+    destination: "bigquery"
+    # Metrics persisted to BigQuery for dashboarding:
+    # - Match rates per tier
+    # - Cluster size distribution
+    # - Blocking reduction ratios
+    # - Pipeline runtime per stage
+  profiling:
+    enabled: false
+    # Enable profiling to analyze column cardinality, null rates,
+    # and blocking key effectiveness before production deployment.

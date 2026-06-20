@@ -1,0 +1,290 @@
+# Incremental Processing Example
+#
+# Demonstrates high-volume incremental entity resolution with:
+#   - Composite ordered watermark (source_date + source_policyid)
+#   - 5M records per batch with deterministic ordering
+#   - Cross-batch blocking (new records vs historical)
+#   - Incremental clustering with canonical_index persistence
+#   - Drain mode for backlog processing
+#
+# This config models an insurance use case where a single day can have
+# 28M+ records. The composite watermark ensures clean batch boundaries
+# even when the primary cursor (source_date) spans millions of rows.
+#
+# Usage:
+#   export BQ_PROJECT=your-gcp-project
+#
+#   # First run: full refresh to initialize canonical_index
+#   bq-er run --config config/examples/incremental_processing.yml --full-refresh
+#
+#   # Daily incremental: process one batch
+#   bq-er run --config config/examples/incremental_processing.yml
+#
+#   # Drain mode: process all pending batches in a loop
+#   bq-er run --config config/examples/incremental_processing.yml --drain
+#
+#   # Profile cursors to find the best secondary cursor column
+#   bq-er profile-cursors --config config/examples/incremental_processing.yml --batch-size 5000000
+
+version: "1.0"
+
+project:
+  name: incremental_insurance_demo
+  description: "High-volume insurance entity resolution with composite watermark"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "insurance_er_bronze"
+  bq_dataset_silver: "insurance_er_silver"
+  bq_dataset_gold: "insurance_er_gold"
+  bq_location: "US"
+  watermark_dataset: "insurance_er_meta"
+
+# ---------------------------------------------------------------------------
+# Incremental processing configuration
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: true
+
+  # Composite ordered cursor: (source_date, source_policyid)
+  # Generates: WHERE (source_date, source_policyid) > (wm_date, wm_id)
+  # This ensures clean batch boundaries even when a single date has 28M+ records
+  cursor_columns:
+    - source_date
+    - source_policyid
+  cursor_mode: ordered    # "ordered" = tuple comparison, "independent" = OR logic
+
+  # Process 5M records per batch
+  batch_size: 5_000_000
+
+  # Re-check records from the last 48 hours for late arrivals
+  grace_period_hours: 48
+
+  # Drain mode: auto-loop through batches until all records consumed
+  drain_mode: false             # Enable via --drain CLI flag or set true here
+  drain_max_iterations: 100     # Safety cap to prevent runaway loops
+
+  # Hash cursor (alternative — use when no natural secondary cursor exists):
+  # hash_cursor:
+  #   column: policy_id
+  #   modulus: 1000
+  #   alias: _hash_partition
+
+# ---------------------------------------------------------------------------
+# Scale optimizations
+# ---------------------------------------------------------------------------
+scale:
+  staging_partition_by: "DATE(source_updated_at)"
+  staging_clustering: [entity_uid, source_name]
+  candidates_clustering: [l_entity_uid]
+  matches_clustering: [l_entity_uid, r_entity_uid]
+  canonical_index_clustering: [entity_uid]
+
+# ---------------------------------------------------------------------------
+# Source data
+# ---------------------------------------------------------------------------
+sources:
+  - name: "policies"
+    table: "${BQ_PROJECT}.raw_insurance.policy_holders"
+    unique_key: "policy_id"
+    updated_at: "source_date"
+    columns:
+      - name: "policy_id"
+        type: "STRING"
+      - name: "first_name"
+        type: "STRING"
+        role: "first_name"
+      - name: "last_name"
+        type: "STRING"
+        role: "last_name"
+      - name: "ssn_hash"
+        type: "STRING"
+      - name: "dob"
+        type: "DATE"
+        role: "dob"
+      - name: "email"
+        type: "STRING"
+        role: "email"
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+      - name: "address_line_1"
+        type: "STRING"
+        role: "address_line_1"
+      - name: "city"
+        type: "STRING"
+        role: "city"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip_code"
+        type: "STRING"
+        role: "zip"
+      - name: "source_policyid"
+        type: "INT64"
+      - name: "source_date"
+        type: "DATE"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+feature_engineering:
+
+  name_features:
+    enabled: true
+    features:
+      - name: "first_name_clean"
+        function: "name_clean"
+        input: "first_name"
+      - name: "last_name_clean"
+        function: "name_clean"
+        input: "last_name"
+      - name: "first_name_soundex"
+        function: "soundex"
+        input: "first_name_clean"
+      - name: "last_name_soundex"
+        function: "soundex"
+        input: "last_name_clean"
+      - name: "first_initial"
+        function: "first_letter"
+        input: "first_name_clean"
+
+  address_features:
+    enabled: true
+    features:
+      - name: "address_clean"
+        function: "address_standardize"
+        input: "address_line_1"
+      - name: "zip5"
+        function: "left"
+        input: "zip_code"
+        params: { length: 5 }
+
+  contact_features:
+    enabled: true
+    features:
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+
+  blocking_keys:
+    - name: "bk_ssn"
+      function: "farm_fingerprint"
+      inputs: ["ssn_hash"]
+    - name: "bk_name_dob"
+      function: "farm_fingerprint_concat"
+      inputs: ["first_name_soundex", "last_name_soundex", "dob"]
+    - name: "bk_name_zip"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "zip5"]
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: ["email_clean"]
+    - name: "bk_phone"
+      function: "farm_fingerprint"
+      inputs: ["phone_clean"]
+
+  composite_keys:
+    - name: "ck_exact"
+      function: "farm_fingerprint_concat"
+      inputs: ["first_name_clean", "last_name_clean", "dob", "zip5"]
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+matching_tiers:
+
+  # Tier 1: Exact SSN match
+  - name: "exact_ssn"
+    description: "Exact SSN hash match"
+    confidence: 1.0
+    blocking:
+      paths:
+        - keys: ["bk_ssn"]
+          candidate_limit: 50
+      cross_batch: true    # Match new records against historical
+    comparisons:
+      - left: "ssn_hash"
+        right: "ssn_hash"
+        method: "exact"
+        weight: 10.0
+    threshold:
+      method: "sum"
+      min_score: 10.0
+
+  # Tier 2: Exact composite (name + DOB + zip)
+  - name: "exact_composite"
+    description: "Exact name + DOB + zip"
+    confidence: 0.95
+    blocking:
+      paths:
+        - keys: ["ck_exact"]
+          candidate_limit: 50
+      cross_batch: true
+    comparisons:
+      - left: "ck_exact"
+        right: "ck_exact"
+        method: "exact"
+        weight: 10.0
+    threshold:
+      method: "sum"
+      min_score: 10.0
+
+  # Tier 3: Fuzzy name + address
+  - name: "fuzzy_name"
+    description: "Fuzzy name matching with address"
+    blocking:
+      paths:
+        - keys: ["bk_name_zip"]
+          candidate_limit: 200
+      cross_batch: true
+    comparisons:
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "jaro_winkler"
+        params: { threshold: 0.85 }
+        weight: 3.0
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.8 }
+        weight: 3.0
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.75 }
+        weight: 2.0
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 2.0
+    threshold:
+      method: "sum"
+      min_score: 8.0
+    hard_negatives:
+      - left: "first_initial"
+        method: "different"
+        action: "penalize"
+        penalty: -2.0
+    soft_signals:
+      - left: "phone_clean"
+        method: "exact"
+        bonus: 2.0
+      - left: "email_clean"
+        method: "exact"
+        bonus: 2.0
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+    max_iterations: 20
+  canonical_selection:
+    method: "completeness"
+  output:
+    include_match_metadata: true
+    entity_id_prefix: "POL"

@@ -1,0 +1,132 @@
+# Entity Type Templates — Schema.org-Inspired Configuration
+#
+# Demonstrates the entity_type system: declaring a type on a source enables:
+#   1. Schema.org property alias detection (givenName → first_name, etc.)
+#   2. Automatic signal injection (hard negatives, soft signals) from templates
+#   3. Validation: warns if required roles are missing
+#   4. Custom entity types via custom_entity_types section
+#
+# Built-in types: Thing, Person, Organization, PostalAddress,
+#                 InsuredEntity, FinancialAccount, Patient
+#
+# Usage:
+#   export BQ_PROJECT=your-gcp-project
+#   bq-er validate --config config/examples/entity_type_person.yml
+#   bq-er preview-sql --config config/examples/entity_type_person.yml --tier exact --stage all
+
+version: "1.0"
+
+project:
+  name: person_entity_type
+  bq_project: "${BQ_PROJECT}"
+
+# Declare a custom entity type (extends built-in Person)
+custom_entity_types:
+  Employee:
+    parent: Person
+    valid_roles:
+      - first_name
+      - last_name
+      - email
+      - phone
+      - employee_id
+      - department
+      - hire_date
+    required_roles:
+      - employee_id
+    description: "Employee entity with HR identifiers"
+
+sources:
+  # Source using built-in Person type with schema.org column names
+  - name: contacts
+    table: "${BQ_PROJECT}.raw.contacts"
+    unique_key: id
+    updated_at: updated_at
+    entity_type: Person              # Enables Person template features
+    columns:
+      # Schema.org property names are auto-detected:
+      #   givenName  → first_name role
+      #   familyName → last_name role
+      #   telephone  → phone role
+      - name: givenName
+        type: STRING
+      - name: familyName
+        type: STRING
+      - name: email
+        type: STRING
+      - name: telephone
+        type: STRING
+      - name: birthDate
+        type: DATE
+      - name: id
+        type: STRING
+      - name: updated_at
+        type: TIMESTAMP
+
+feature_engineering:
+  name_features:
+    features:
+      - name: first_name_clean
+        function: name_clean
+        input: givenName
+      - name: last_name_clean
+        function: name_clean
+        input: familyName
+
+  contact_features:
+    features:
+      - name: email_clean
+        function: lower_trim
+        input: email
+      - name: phone_clean
+        function: phone_standardize
+        input: telephone
+
+  blocking_keys:
+    - name: bk_email
+      function: farm_fingerprint
+      inputs: [email_clean]
+    - name: bk_name_soundex
+      function: soundex
+      inputs: [first_name_clean]
+
+matching_tiers:
+  - name: exact
+    blocking:
+      paths:
+        - keys: [bk_email]
+    comparisons:
+      - left: email_clean
+        right: email_clean
+        method: exact
+        weight: 5.0
+      - left: first_name_clean
+        right: first_name_clean
+        method: exact
+        weight: 3.0
+      - left: last_name_clean
+        right: last_name_clean
+        method: exact
+        weight: 3.0
+    threshold:
+      min_score: 8.0
+
+  - name: fuzzy
+    blocking:
+      paths:
+        - keys: [bk_name_soundex]
+    comparisons:
+      - left: first_name_clean
+        right: first_name_clean
+        method: jaro_winkler
+        weight: 4.0
+      - left: last_name_clean
+        right: last_name_clean
+        method: jaro_winkler
+        weight: 4.0
+      - left: phone_clean
+        right: phone_clean
+        method: exact
+        weight: 3.0
+    threshold:
+      min_score: 7.0

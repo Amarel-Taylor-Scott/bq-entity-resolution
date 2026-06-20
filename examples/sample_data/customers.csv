@@ -1,0 +1,51 @@
+id,first_name,last_name,email,phone,address_line_1,city,state,zip,date_of_birth,created_at
+1,John,Smith,john.smith@gmail.com,555-234-5678,123 Oak Street,Springfield,IL,62701,1985-03-15,2024-01-10 08:30:00
+2,Jon,Smith,jon.smith@gmail.com,555-234-5678,123 Oak St,Springfield,IL,62701,1985-03-15,2024-02-14 10:15:00
+3,Jonathan,Smith,jsmith@yahoo.com,555-234-5679,123 Oak Street Apt 2,Springfield,IL,62701,1985-03-15,2024-03-22 14:45:00
+4,John,Smyth,john.smith@gmail.com,555-234-5678,124 Oak Street,Springfield,IL,62701,1985-03-15,2024-04-05 09:00:00
+5,John,Smith,johnsmith@hotmail.com,555-234-5670,123 Oak Stret,Springfeld,IL,62701,1985-03-15,2024-05-18 11:30:00
+6,Jane,Doe,jane.doe@outlook.com,555-345-6789,456 Maple Avenue,Columbus,OH,43215,1990-07-22,2024-01-05 07:00:00
+7,Jane,Doe-Williams,jane.williams@outlook.com,555-345-6789,456 Maple Ave,Columbus,OH,43215,1990-07-22,2024-03-01 13:20:00
+8,Jane,Williams,jane.doe@outlook.com,555-345-6780,456 Maple Avenue,Columbus,OH,43215,1990-07-22,2024-06-10 16:00:00
+9,J,Doe,jdoe@gmail.com,555-345-6789,456 Maple Ave Apt 3B,Columbus,OH,43215,1990-07-22,2024-07-20 08:45:00
+10,Robert,Johnson,robert.johnson@aol.com,555-456-7890,789 Pine Road,Austin,TX,78701,1978-11-03,2024-01-15 09:30:00
+11,Robt,Johnson,robert.johnson@aol.com,555-456-7890,789 Pine Rd,Austin,TX,78701,1978-11-03,2024-02-28 12:00:00
+12,Bob,Johnson,bjohnson@gmail.com,555-456-7891,789 Pine Road,Austin,TX,78701,1978-11-03,2024-04-10 15:30:00
+13,Robert,Jonhson,robert.johnson@aol.com,555-465-7890,789 Pine Road,Austin,TX,78701,1978-11-03,2024-05-25 10:00:00
+14,Bobby,Johnson,bobby.j@yahoo.com,555-456-7890,790 Pine Road,Austin,TX,78701,1978-11-03,2024-08-05 14:15:00
+15,Maria,Garcia,maria.garcia@gmail.com,555-567-8901,321 Elm Boulevard,Phoenix,AZ,85001,1992-04-18,2024-01-20 08:00:00
+16,Mari,Garcia,mgarcia@gmail.com,555-567-8901,321 Elm Blvd,Phoenix,AZ,85001,1992-04-18,2024-03-15 11:00:00
+17,Mary,Garcia,maria.garcia@gmail.com,555-567-8902,321 Elm Boulevard,Phoenix,AZ,85001,1992-04-18,2024-05-02 14:30:00
+18,Maria,Garcia-Lopez,maria.garcia.lopez@yahoo.com,555-567-8901,321 Elm Boulevard Apt 4,Phoenix,AZ,85001,1992-04-18,2024-06-20 09:45:00
+19,James,Williams,james.williams@protonmail.com,555-678-9012,654 Birch Lane,Denver,CO,80201,1982-09-30,2024-01-25 10:30:00
+20,James,Williams,james.williams@protonmail.com,555-678-9012,1200 Cherry Creek Dr,Denver,CO,80209,1982-09-30,2024-04-18 13:00:00
+21,Jim,Williams,jimwilliams@gmail.com,555-678-9013,8742 Colfax Avenue,Aurora,CO,80010,1982-09-30,2024-07-01 08:30:00
+22,James,Williams,j.williams@outlook.com,555-678-9012,450 Broadway,Denver,CO,80203,1982-09-30,2024-09-15 16:45:00
+23,Michael,Chen,michael.chen@techcorp.com,555-111-2222,100 Market Street,San Francisco,CA,94105,1991-06-12,2024-01-08 09:00:00
+24,Sarah,Thompson,sarah.t@live.com,555-222-3333,250 Peachtree Street,Atlanta,GA,30303,1988-12-01,2024-02-12 11:30:00
+25,David,Lee,dlee@startup.io,555-333-4444,500 Congress Avenue,Austin,TX,78701,1995-02-28,2024-03-05 14:00:00
+26,Emily,Martinez,emily.m@university.edu,555-444-5555,75 University Blvd,Tucson,AZ,85721,1999-08-14,2024-04-20 08:15:00
+27,Daniel,Brown,dan.brown@corporate.net,555-555-6666,1500 K Street NW,Washington,DC,20005,1975-01-09,2024-05-10 10:45:00
+28,Amanda,Wilson,awilson@consulting.com,555-666-7777,200 Clarendon Street,Boston,MA,02116,1986-05-23,2024-06-01 13:30:00
+29,Christopher,Taylor,chris.taylor@email.com,555-777-8888,300 Pike Street,Seattle,WA,98101,1993-10-07,2024-07-15 09:00:00
+30,Jessica,Anderson,jess.anderson@mail.com,555-888-9999,400 Nicollet Mall,Minneapolis,MN,55401,1987-03-19,2024-08-20 15:30:00
+31,William,Davis,wdavis@finance.com,555-999-0000,600 Brickell Avenue,Miami,FL,33131,1980-07-04,2024-01-30 08:00:00
+32,Jennifer,Moore,jen.moore@design.co,555-000-1111,700 Main Street,Portland,OR,97201,1994-11-25,2024-02-25 11:00:00
+33,Kevin,White,kwhite@logistics.com,555-101-2020,800 Woodward Avenue,Detroit,MI,48226,1983-08-16,2024-03-18 14:30:00
+34,Lisa,Harris,lisa.harris@healthcare.org,555-202-3030,900 Euclid Avenue,Cleveland,OH,44106,1989-02-14,2024-04-28 09:15:00
+35,Thomas,Clark,tclark@engineering.net,555-303-4040,1100 Walnut Street,Philadelphia,PA,19107,1977-06-30,2024-05-20 12:00:00
+36,Michelle,Lewis,mlewis@retail.com,555-404-5050,1200 Main Plaza,San Antonio,TX,78205,1996-09-08,2024-06-15 10:30:00
+37,Brian,Walker,bwalker@media.com,555-505-6060,1300 Vine Street,Nashville,TN,37203,1984-04-22,2024-07-22 14:00:00
+38,Rachel,Robinson,rrobinson@nonprofit.org,555-606-7070,1400 Prospect Avenue,Kansas City,MO,64127,1991-12-11,2024-08-10 08:45:00
+39,Steven,Hall,shall@tech.io,555-707-8080,1500 Larimer Street,Denver,CO,80202,1979-01-25,2024-09-01 11:15:00
+40,Nicole,Young,nyoung@pharma.com,555-808-9090,1600 Market Street,St. Louis,MO,63103,1997-05-17,2024-10-05 13:00:00
+41,Patrick,King,pking@legal.com,555-909-0101,1700 Fourth Avenue,Pittsburgh,PA,15219,1981-10-03,2024-01-12 09:30:00
+42,Heather,Wright,hwright@education.edu,555-010-1212,1800 East Broad Street,Richmond,VA,23219,1990-03-28,2024-02-18 12:45:00
+43,Ryan,Scott,rscott@manufacturing.com,555-121-2323,1900 Spring Garden Street,Charlotte,NC,28203,1985-07-15,2024-03-25 10:00:00
+44,Megan,Green,mgreen@hospitality.com,555-232-3434,2000 West End Avenue,Nashville,TN,37203,1993-01-20,2024-04-15 14:30:00
+45,Brandon,Adams,badams@insurance.com,555-343-4545,2100 East Washington,Indianapolis,IN,46204,1976-11-08,2024-05-28 08:00:00
+46,Laura,Nelson,lnelson@realestate.com,555-454-5656,2200 Pacific Avenue,San Diego,CA,92101,1988-06-14,2024-06-22 11:30:00
+47,Andrew,Baker,abaker@aviation.com,555-565-6767,2300 East Colfax,Denver,CO,80206,1992-08-03,2024-07-30 15:00:00
+48,Stephanie,Hill,shill@biotech.com,555-676-7878,2400 South Michigan Ave,Chicago,IL,60616,1987-12-19,2024-08-25 09:30:00
+49,Gregory,Campbell,gcampbell@energy.com,555-787-8989,2500 Travis Street,Houston,TX,77002,1978-04-07,2024-09-18 12:15:00
+50,Kimberly,Mitchell,kmitchell@banking.com,555-898-9090,2600 Las Vegas Blvd,Las Vegas,NV,89109,1995-10-31,2024-10-10 14:45:00

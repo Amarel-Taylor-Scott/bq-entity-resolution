@@ -1,0 +1,413 @@
+# Census Geocoding Enrichment Example
+#
+# Demonstrates enrichment joins to a US Census geocoding lookup table
+# for customer deduplication. Addresses are enriched with standardized
+# geocoded data (lat/lon, census tract, county FIPS), which then powers
+# geo-aware blocking keys and proximity-based comparisons.
+#
+# Prerequisite: You need a Census geocoding lookup table in BigQuery.
+# The Census Bureau Geocoder (https://geocoding.geo.census.gov/) can
+# batch-geocode addresses. Load the output into BigQuery as the table
+# referenced in enrichment_joins below.
+#
+# Usage:
+#   export BQ_PROJECT=your-gcp-project
+#   bq-er validate --config config/examples/enrichment_geocoding.yml
+#   bq-er preview-sql --config config/examples/enrichment_geocoding.yml --tier fuzzy_geo --stage all
+#   bq-er run --config config/examples/enrichment_geocoding.yml --dry-run
+
+version: "1.0"
+
+project:
+  name: customer_geocoded_dedup
+  description: "Customer dedup enriched with Census geocoding data"
+  bq_project: "${BQ_PROJECT}"
+  bq_dataset_bronze: "geo_dedup_bronze"
+  bq_dataset_silver: "geo_dedup_silver"
+  bq_dataset_gold: "geo_dedup_gold"
+  bq_location: "US"
+  watermark_dataset: "geo_dedup_meta"
+
+# ---------------------------------------------------------------------------
+# Source data
+# ---------------------------------------------------------------------------
+sources:
+  - name: "customers"
+    table: "${BQ_PROJECT}.raw_crm.customers"
+    unique_key: "customer_id"
+    updated_at: "modified_at"
+    columns:
+      - name: "customer_id"
+        type: "STRING"
+      - name: "first_name"
+        type: "STRING"
+        role: "first_name"
+      - name: "last_name"
+        type: "STRING"
+        role: "last_name"
+      - name: "address_line_1"
+        type: "STRING"
+        role: "address_line_1"
+      - name: "city"
+        type: "STRING"
+        role: "city"
+      - name: "state"
+        type: "STRING"
+        role: "state"
+      - name: "zip_code"
+        type: "STRING"
+        role: "zip"
+      - name: "email"
+        type: "STRING"
+        role: "email"
+      - name: "phone"
+        type: "STRING"
+        role: "phone"
+      - name: "modified_at"
+        type: "TIMESTAMP"
+    passthrough_columns:
+      - "source_system"
+
+# ---------------------------------------------------------------------------
+# Feature engineering
+# ---------------------------------------------------------------------------
+feature_engineering:
+
+  # -- Enrichment join to Census geocoding lookup table -------------------
+  # This LEFT JOINs the source records against a pre-geocoded address
+  # lookup table. The join key is a FARM_FINGERPRINT hash of the
+  # concatenated address components, making the join INT64-speed (~3-5x
+  # faster than STRING joins).
+  #
+  # The lookup table schema is expected to contain:
+  #   address_fp   INT64   -- FARM_FINGERPRINT(CONCAT(address, city, state))
+  #   matched_address STRING -- Census-standardized address
+  #   latitude     FLOAT64
+  #   longitude    FLOAT64
+  #   tract        STRING  -- 11-digit FIPS tract code (e.g. "36061002300")
+  #   county_fips  STRING  -- 5-digit county FIPS (e.g. "36061")
+  #   match_type   STRING  -- "Exact", "Non_Exact", "No_Match"
+  enrichment_joins:
+    - name: "census_geocode"
+      table: "${BQ_PROJECT}.reference.census_address_geocoded"
+      lookup_key: "address_fp"
+      source_key_function: "farm_fingerprint_concat"
+      source_key_inputs: ["address_line_1", "city", "state"]
+      columns:
+        - "matched_address"
+        - "latitude"
+        - "longitude"
+        - "tract"
+        - "county_fips"
+        - "match_type"
+      column_prefix: "census_"
+      match_flag: "has_census_match"
+      type: "LEFT"
+
+  # -- Name features -----------------------------------------------------
+  name_features:
+    enabled: true
+    features:
+      - name: "first_name_clean"
+        function: "name_clean"
+        input: "first_name"
+      - name: "last_name_clean"
+        function: "name_clean"
+        input: "last_name"
+      - name: "first_name_soundex"
+        function: "soundex"
+        input: "first_name_clean"
+      - name: "last_name_soundex"
+        function: "soundex"
+        input: "last_name_clean"
+      - name: "first_initial"
+        function: "first_letter"
+        input: "first_name_clean"
+
+  # -- Address features --------------------------------------------------
+  address_features:
+    enabled: true
+    features:
+      - name: "address_clean"
+        function: "address_standardize"
+        input: "address_line_1"
+      - name: "state_clean"
+        function: "upper_trim"
+        input: "state"
+      - name: "city_clean"
+        function: "upper_trim"
+        input: "city"
+      - name: "zip5"
+        function: "left"
+        input: "zip_code"
+        params: { length: 5 }
+
+  # -- Contact features --------------------------------------------------
+  contact_features:
+    enabled: true
+    features:
+      - name: "phone_clean"
+        function: "phone_standardize"
+        input: "phone"
+      - name: "email_clean"
+        function: "lower_trim"
+        input: "email"
+
+  # -- Geo features derived from enrichment columns ----------------------
+  # These features consume the census_latitude / census_longitude columns
+  # that the enrichment join brings in (note the column_prefix "census_").
+  extra_groups:
+    geo_features:
+      enabled: true
+      features:
+        # Geohash at precision 6 (~1.2 km cells) for geo blocking
+        - name: "geo_hash_6"
+          function: "geo_hash"
+          inputs: ["census_latitude", "census_longitude"]
+          params: { precision: 6 }
+
+        # Coarser geohash at precision 4 (~39 km cells) for wider blocking
+        - name: "geo_hash_4"
+          function: "geo_hash"
+          inputs: ["census_latitude", "census_longitude"]
+          params: { precision: 4 }
+
+        # Census tract code (11-digit FIPS) — same tract implies proximity
+        - name: "census_tract_clean"
+          function: "nullif_empty"
+          input: "census_tract"
+
+        # County FIPS code (5-digit) — coarser geographic grouping
+        - name: "county_fips_clean"
+          function: "nullif_empty"
+          input: "census_county_fips"
+
+  # -- Blocking keys -----------------------------------------------------
+  # Mix of traditional (name + zip) and census-enriched (county, geohash)
+  blocking_keys:
+    # Traditional: last name soundex + zip5
+    - name: "bk_name_zip"
+      function: "farm_fingerprint_concat"
+      inputs: ["last_name_soundex", "zip5"]
+
+    # Traditional: email
+    - name: "bk_email"
+      function: "farm_fingerprint"
+      inputs: ["email_clean"]
+
+    # Traditional: phone
+    - name: "bk_phone"
+      function: "farm_fingerprint"
+      inputs: ["phone_clean"]
+
+    # Census-enriched: county FIPS + last name soundex
+    # Records in the same county with phonetically similar last names
+    - name: "bk_county_name"
+      function: "farm_fingerprint_concat"
+      inputs: ["county_fips_clean", "last_name_soundex"]
+
+    # Census-enriched: geohash precision 4 (~39 km) + last name soundex
+    # Catches nearby records even when zip codes differ across boundaries
+    - name: "bk_geo4_name"
+      function: "farm_fingerprint_concat"
+      inputs: ["geo_hash_4", "last_name_soundex"]
+
+    # Census-enriched: census tract + first initial
+    # Very precise — same tract block is typically a few city blocks
+    - name: "bk_tract_initial"
+      function: "farm_fingerprint_concat"
+      inputs: ["census_tract_clean", "first_initial"]
+
+  composite_keys:
+    - name: "ck_name_address"
+      function: "farm_fingerprint_concat"
+      inputs: ["first_name_clean", "last_name_clean", "address_clean", "zip5"]
+
+# ---------------------------------------------------------------------------
+# Matching tiers
+# ---------------------------------------------------------------------------
+matching_tiers:
+
+  # Tier 1: Exact composite match on name + address
+  - name: "exact_name_address"
+    description: "Exact match on cleaned name + standardized address + zip"
+    confidence: 1.0
+    blocking:
+      paths:
+        - keys: ["ck_name_address"]
+          candidate_limit: 50
+    comparisons:
+      - left: "ck_name_address"
+        right: "ck_name_address"
+        method: "exact"
+        weight: 10.0
+    threshold:
+      method: "sum"
+      min_score: 10.0
+
+  # Tier 2: Email match with name confirmation
+  - name: "email_match"
+    description: "Same email + similar last name"
+    confidence: 0.95
+    blocking:
+      paths:
+        - keys: ["bk_email"]
+          candidate_limit: 50
+    comparisons:
+      - left: "email_clean"
+        right: "email_clean"
+        method: "exact_case_insensitive"
+        weight: 5.0
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein"
+        params: { max_distance: 2 }
+        weight: 3.0
+    threshold:
+      method: "sum"
+      min_score: 8.0
+
+  # Tier 3: Fuzzy name + geo proximity matching
+  # This tier demonstrates the power of enrichment joins. Census geocoding
+  # provides lat/lon for geo_distance_score and census_tract for exact
+  # geographic area matching. This catches duplicates where addresses differ
+  # slightly (typos, abbreviations) but refer to the same physical location.
+  - name: "fuzzy_geo"
+    description: "Fuzzy name matching with census geo proximity validation"
+    blocking:
+      paths:
+        # Geohash blocking: candidates within ~39 km + same last name sound
+        - keys: ["bk_geo4_name"]
+          candidate_limit: 300
+        # County blocking: same county + similar last name
+        - keys: ["bk_county_name"]
+          candidate_limit: 200
+        # Census tract blocking: same tract + first initial (very precise)
+        - keys: ["bk_tract_initial"]
+          candidate_limit: 100
+    comparisons:
+      # Name similarity
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "jaro_winkler"
+        params: { threshold: 0.85 }
+        weight: 3.0
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.8 }
+        weight: 3.0
+
+      # Census tract match — same 11-digit tract = within a few blocks
+      - left: "census_tract_clean"
+        right: "census_tract_clean"
+        method: "exact"
+        weight: 3.0
+
+      # Geo proximity score from census lat/lon (0.0 to 1.0, max 10 km)
+      - left: "census_latitude"
+        right: "census_latitude"
+        method: "geo_distance_score"
+        params:
+          max_km: 10.0
+          left_lon: "census_longitude"
+          right_lon: "census_longitude"
+        weight: 2.0
+
+      # Zip code match as additional signal
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 1.0
+    threshold:
+      method: "sum"
+      min_score: 8.0
+    hard_negatives:
+      # Different first initial is suspicious — penalize
+      - left: "first_initial"
+        method: "different"
+        action: "penalize"
+        penalty: -3.0
+    soft_signals:
+      # Matching phone number is a strong positive signal
+      - left: "phone_clean"
+        method: "exact"
+        bonus: 2.0
+      # Same county FIPS is a mild positive signal
+      - left: "county_fips_clean"
+        method: "exact"
+        bonus: 0.5
+
+  # Tier 4: Traditional fuzzy fallback for records without census matches
+  # Some records may not geocode (PO boxes, new construction, bad addresses).
+  # This tier handles them with standard name + address + zip matching.
+  - name: "fuzzy_fallback"
+    description: "Traditional fuzzy matching for records without census geocode"
+    blocking:
+      paths:
+        - keys: ["bk_name_zip"]
+          candidate_limit: 200
+    comparisons:
+      - left: "first_name_clean"
+        right: "first_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.8 }
+        weight: 3.0
+      - left: "last_name_clean"
+        right: "last_name_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.8 }
+        weight: 3.0
+      - left: "address_clean"
+        right: "address_clean"
+        method: "levenshtein_normalized"
+        params: { threshold: 0.75 }
+        weight: 2.0
+      - left: "zip5"
+        right: "zip5"
+        method: "exact"
+        weight: 2.0
+      - left: "state_clean"
+        right: "state_clean"
+        method: "exact"
+        weight: 1.0
+    threshold:
+      method: "sum"
+      min_score: 8.0
+    hard_negatives:
+      - left: "first_initial"
+        method: "different"
+        action: "penalize"
+        penalty: -2.0
+    soft_signals:
+      - left: "phone_clean"
+        method: "exact"
+        bonus: 2.0
+      - left: "email_clean"
+        method: "exact_case_insensitive"
+        bonus: 1.5
+
+# ---------------------------------------------------------------------------
+# Reconciliation
+# ---------------------------------------------------------------------------
+reconciliation:
+  strategy: "tier_priority"
+  clustering:
+    method: "connected_components"
+    max_iterations: 15
+  canonical_selection:
+    method: "completeness"
+  output:
+    include_match_metadata: true
+    entity_id_prefix: "CUST"
+    # Cluster the gold output by state for efficient regional queries
+    cluster_columns: ["state_clean", "zip5"]
+
+# ---------------------------------------------------------------------------
+# Incremental processing
+# ---------------------------------------------------------------------------
+incremental:
+  enabled: true
+  grace_period_hours: 24
+  cursor_columns: ["modified_at"]
+  batch_size: 1000000
