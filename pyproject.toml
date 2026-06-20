@@ -55,6 +55,11 @@ dev = [
 local = [
     "duckdb>=0.10.0,<2.0.0",
     "metaphone>=0.6,<1.0",
+    # DuckDB >=1.5 requires numpy to register Python scalar UDFs (the
+    # SOUNDEX / metaphone phonetic shims) and pytz to fetch TIMESTAMP
+    # columns back into Python. Both are runtime deps of the local backend.
+    "numpy>=1.24",
+    "pytz>=2024.1",
 ]
 
 [project.urls]

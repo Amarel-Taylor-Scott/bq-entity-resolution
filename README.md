@@ -3,7 +3,7 @@
 [![PyPI version](https://img.shields.io/pypi/v/bq-entity-resolution.svg)](https://pypi.org/project/bq-entity-resolution/)
 [![Python](https://img.shields.io/pypi/pyversions/bq-entity-resolution.svg)](https://pypi.org/project/bq-entity-resolution/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-3833%20passing-brightgreen.svg)]()
+[![Tests](https://img.shields.io/badge/tests-3846%20passing%2C%2024%20skipped-brightgreen.svg)]()
 
 A configurable, multi-tier entity resolution pipeline for Google BigQuery. Python handles configuration and SQL generation; BigQuery executes all data processing. No data leaves the warehouse.
 
@@ -486,7 +486,7 @@ pipeline.run(backend=DuckDBBackend())
 
 ```bash
 pip install -e ".[dev,local]"
-python -m pytest tests/ -v               # 3833 tests, ~90s
+python -m pytest tests/ -v               # 3846 passing, 24 skipped, ~60s
 python -m ruff check src/                 # lint
 python -m mypy src/                       # type check
 ```

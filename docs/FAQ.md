@@ -85,7 +85,7 @@ No credentials, no cloud resources, no cost. DuckDB handles SQL translation auto
 **Option 2: Run the test suite**
 
 ```bash
-# Run all 1,256 tests
+# Run all 3,846 tests (24 skipped: BigQuery-emulator + DuckDB-unsupported BQ functions)
 python -m pytest tests/ -v
 
 # Run a specific test file

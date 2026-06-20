@@ -95,8 +95,8 @@ class LeafHeuristics(BaseModel):
 Pipeline config gains `partitions: list[PartitionDef]` and `leaves: list[LeafDef]`.
 **Back-compat:** when `leaves` is omitted, the loader synthesizes the current
 behaviour as two implicit leaves (`new_x_new`, `new_x_old`) from the existing
-blocking paths — zero change for existing configs (existing 3,833 tests stay
-green).
+blocking paths — zero change for existing configs (existing 3,846 passing
+tests stay green).
 
 ### YAML example
 
