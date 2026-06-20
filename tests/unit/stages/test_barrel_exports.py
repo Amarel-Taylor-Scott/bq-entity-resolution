@@ -13,6 +13,7 @@ EXPECTED_STAGES = [
     "BlockingStage",
     "MatchingStage",
     "MatchAccumulationStage",
+    "LeafResolutionStage",
     "ClusteringStage",
     "CanonicalIndexInitStage",
     "CanonicalIndexPopulateStage",

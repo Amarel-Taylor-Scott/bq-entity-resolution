@@ -20,6 +20,7 @@ from bq_entity_resolution.stages.features import (
     TermFrequencyStage,
 )
 from bq_entity_resolution.stages.label_ingestion import LabelIngestionStage
+from bq_entity_resolution.stages.leaf_resolution import LeafResolutionStage
 from bq_entity_resolution.stages.match_accumulation import MatchAccumulationStage
 from bq_entity_resolution.stages.matching import MatchingStage
 from bq_entity_resolution.stages.placeholder_detection import PlaceholderDetectionStage
@@ -207,33 +208,47 @@ def build_pipeline_dag(
     # 3. Term frequencies (auto-depends on features via TableRef)
     stages.append(TermFrequencyStage(config))
 
-    # 4. Blocking + matching + accumulation per tier with explicit tier ordering
+    # 4. Candidate-pair generation.
+    #
+    # Two paths, selected by config:
+    #   - Leaf-based (config has explicit `leaves:`): a single leaf-resolution
+    #     stage runs every enabled leaf and unions the tagged pairs into
+    #     all_matches. This supersedes the per-tier blocking/matching split.
+    #   - Historical (no `leaves:`): blocking + matching + accumulation per tier
+    #     with cross-tier exclusion — byte-identical to the pre-leaf behaviour.
     prev_matching_name: str | None = None
-    for i, tier in enumerate(config.enabled_tiers()):
-        blocking = BlockingStage(tier, i, config)
-        matching = MatchingStage(tier, i, config)
-        accumulation = MatchAccumulationStage(tier, i, config)
-        stages.append(blocking)
-        stages.append(matching)
-        stages.append(accumulation)
+    use_leaves = bool(getattr(config, "leaves", None))
 
-        # Cross-tier exclusion: tier i's blocking depends on tier i-1's accumulation
-        if prev_matching_name:
-            explicit_edges[blocking.name] = [prev_matching_name]
+    if use_leaves:
+        leaf_stage = LeafResolutionStage(config)
+        stages.append(leaf_stage)
+        prev_matching_name = leaf_stage.name
+    else:
+        for i, tier in enumerate(config.enabled_tiers()):
+            blocking = BlockingStage(tier, i, config)
+            matching = MatchingStage(tier, i, config)
+            accumulation = MatchAccumulationStage(tier, i, config)
+            stages.append(blocking)
+            stages.append(matching)
+            stages.append(accumulation)
 
-        prev_matching_name = accumulation.name
+            # Cross-tier exclusion: tier i's blocking depends on tier i-1's accumulation
+            if prev_matching_name:
+                explicit_edges[blocking.name] = [prev_matching_name]
 
-        # Active learning per tier (if enabled)
-        if getattr(tier.active_learning, "enabled", False):
-            al_stage = ActiveLearningStage(tier, config)
-            stages.append(al_stage)
+            prev_matching_name = accumulation.name
 
-            # Label ingestion: ingest human labels from review queue
-            if getattr(tier.active_learning.label_feedback, "enabled", False):
-                li_stage = LabelIngestionStage(tier, config)
-                stages.append(li_stage)
-                # Ingestion depends on review queue being created
-                explicit_edges[li_stage.name] = [al_stage.name]
+            # Active learning per tier (if enabled)
+            if getattr(tier.active_learning, "enabled", False):
+                al_stage = ActiveLearningStage(tier, config)
+                stages.append(al_stage)
+
+                # Label ingestion: ingest human labels from review queue
+                if getattr(tier.active_learning.label_feedback, "enabled", False):
+                    li_stage = LabelIngestionStage(tier, config)
+                    stages.append(li_stage)
+                    # Ingestion depends on review queue being created
+                    explicit_edges[li_stage.name] = [al_stage.name]
 
     # 5. Canonical index init (incremental only — creates table if not exists)
     inc = getattr(config, "incremental", None)

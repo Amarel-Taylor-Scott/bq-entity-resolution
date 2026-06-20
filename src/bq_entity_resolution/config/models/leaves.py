@@ -71,7 +71,7 @@ class PartitionDef(BaseModel):
         return None if v is None else _reject_sql_injection(v, context="partition predicate")
 
     @model_validator(mode="after")
-    def _table_required_for_table_source(self) -> "PartitionDef":
+    def _table_required_for_table_source(self) -> PartitionDef:
         if self.source == "table" and not self.table:
             raise ValueError(f"partition {self.name!r}: source='table' requires 'table'")
         return self
@@ -135,7 +135,7 @@ class LeafDef(BaseModel):
         return self.left == self.right
 
     @model_validator(mode="after")
-    def _cron_requires_expr(self) -> "LeafDef":
+    def _cron_requires_expr(self) -> LeafDef:
         if self.schedule == "cron" and not self.cron:
             raise ValueError(f"leaf {self.name!r}: schedule='cron' requires 'cron'")
         return self

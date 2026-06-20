@@ -39,6 +39,11 @@ def all_matches_table(config: PipelineConfig) -> str:
     return config.fq_table("bq_dataset_silver", "all_matched_pairs")
 
 
+def leaf_pairs_table(config: PipelineConfig, leaf_name: str) -> str:
+    """Silver layer candidate-pair table for a single resolution leaf."""
+    return config.fq_table("bq_dataset_silver", f"leaf_pairs_{leaf_name}")
+
+
 def cluster_table(config: PipelineConfig) -> str:
     """Silver layer entity cluster assignments."""
     return config.fq_table("bq_dataset_silver", "entity_clusters")

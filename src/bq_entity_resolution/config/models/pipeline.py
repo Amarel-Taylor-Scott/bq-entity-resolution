@@ -21,6 +21,12 @@ from bq_entity_resolution.config.models.infrastructure import (
     ProjectConfig,
     ScaleConfig,
 )
+from bq_entity_resolution.config.models.leaves import (
+    LeafDef,
+    PartitionDef,
+    default_leaves,
+    default_partitions,
+)
 from bq_entity_resolution.config.models.matching import (
     ComparisonDef,
     HardNegativeDef,
@@ -64,6 +70,11 @@ class PipelineConfig(BaseModel):
     global_hard_positives: list[HardPositiveDef] = Field(default_factory=list)
     global_soft_signals: list[SoftSignalDef] = Field(default_factory=list)
     reconciliation: ReconciliationConfig = Field(default_factory=ReconciliationConfig)
+    # Leaf-based resolution (see docs/leaf-resolution-design.md). When omitted,
+    # the loader synthesizes the historical behaviour (see effective_leaves),
+    # so existing configs are byte-identical and the established suite stays green.
+    partitions: list[PartitionDef] = Field(default_factory=list)
+    leaves: list[LeafDef] = Field(default_factory=list)
     incremental: IncrementalConfig = Field(default_factory=IncrementalConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)  # global default
@@ -234,9 +245,77 @@ class PipelineConfig(BaseModel):
             raise ValueError("At least one source must be defined")
         return self
 
+    @model_validator(mode="after")
+    def _validate_leaves(self) -> PipelineConfig:
+        """Validate explicitly-configured leaves (back-compat: skip if omitted).
+
+        When ``leaves`` is provided, leaf names must be unique and every
+        ``left``/``right`` must reference a known partition. Partitions are the
+        configured ones plus the implicit defaults (``new``/``old``).
+        """
+        if not self.leaves:
+            return self
+
+        names = [leaf.name for leaf in self.leaves]
+        dupes = sorted({n for n in names if names.count(n) > 1})
+        if dupes:
+            raise ValueError(f"Duplicate leaf names: {dupes}")
+
+        known = {p.name for p in self.effective_partitions()}
+        for leaf in self.leaves:
+            for side in (leaf.left, leaf.right):
+                if side not in known:
+                    raise ValueError(
+                        f"Leaf '{leaf.name}' references undefined partition "
+                        f"'{side}'. Defined partitions: {sorted(known)}"
+                    )
+        return self
+
     def enabled_tiers(self) -> list[MatchingTierConfig]:
         """Return only enabled matching tiers in order."""
         return [t for t in self.matching_tiers if t.enabled]
+
+    def _has_cross_batch_blocking(self) -> bool:
+        """True when any enabled tier compares new records against canonicals.
+
+        This is the signal the loader uses to decide whether the synthesized
+        ``new×old`` leaf existed in the pre-leaf behaviour.
+        """
+        return any(t.blocking.cross_batch for t in self.enabled_tiers())
+
+    def effective_partitions(self) -> list[PartitionDef]:
+        """Configured partitions, or the historical ``new``/``old`` defaults.
+
+        Back-compat: a config without ``partitions`` resolves to the two
+        partitions every incremental pipeline already has.
+        """
+        return list(self.partitions) if self.partitions else default_partitions()
+
+    def effective_leaves(self) -> list[LeafDef]:
+        """Configured leaves, or the synthesized historical behaviour.
+
+        When ``leaves`` is omitted, reproduce the pre-leaf semantics:
+        always ``new×new`` (intra-batch dedup), plus ``new×old`` when any
+        enabled tier enabled cross-batch blocking. This keeps existing configs
+        byte-identical (the established suite stays green) while still exposing
+        leaves as first-class units for configs that opt in.
+        """
+        if self.leaves:
+            return list(self.leaves)
+        return default_leaves(cross_batch=self._has_cross_batch_blocking())
+
+    def runnable_leaves(self) -> list[LeafDef]:
+        """Enabled, every-run leaves for this run.
+
+        ``schedule="every_run"`` leaves run each pipeline invocation;
+        ``manual``/``cron`` leaves (e.g. ``old×old`` repair) are opt-in and
+        excluded here — the executor selects them explicitly.
+        """
+        return [
+            leaf
+            for leaf in self.effective_leaves()
+            if leaf.enabled and leaf.schedule == "every_run"
+        ]
 
     def effective_hard_negatives(self, tier: MatchingTierConfig) -> list[HardNegativeDef]:
         """Return combined global + tier-level hard negatives for a tier.

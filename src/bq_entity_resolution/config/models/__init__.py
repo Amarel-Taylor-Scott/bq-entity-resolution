@@ -15,6 +15,9 @@ from bq_entity_resolution.config.models import (
     infrastructure as _infra_mod,
 )
 from bq_entity_resolution.config.models import (
+    leaves as _leaves_mod,
+)
+from bq_entity_resolution.config.models import (
     matching as _matching_mod,
 )
 from bq_entity_resolution.config.models import (
@@ -29,6 +32,7 @@ from bq_entity_resolution.config.models import (
 from bq_entity_resolution.config.models.blocking import *  # noqa: F401,F403
 from bq_entity_resolution.config.models.features import *  # noqa: F401,F403
 from bq_entity_resolution.config.models.infrastructure import *  # noqa: F401,F403
+from bq_entity_resolution.config.models.leaves import *  # noqa: F401,F403
 from bq_entity_resolution.config.models.matching import *  # noqa: F401,F403
 from bq_entity_resolution.config.models.pipeline import *  # noqa: F401,F403
 from bq_entity_resolution.config.models.reconciliation import *  # noqa: F401,F403
@@ -38,6 +42,7 @@ __all__ = [
     *_blocking_mod.__all__,
     *_features_mod.__all__,
     *_infra_mod.__all__,
+    *_leaves_mod.__all__,
     *_matching_mod.__all__,
     *_pipeline_mod.__all__,
     *_recon_mod.__all__,

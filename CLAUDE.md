@@ -8,7 +8,7 @@
 **bq-entity-resolution** is a config-driven entity resolution pipeline for BigQuery.
 Python generates SQL; BigQuery (or DuckDB locally) executes it. No data leaves the warehouse.
 
-- **3,846 tests passing, 24 skipped** (skips: BigQuery-emulator and DuckDB-unsupported BQ-function integration tests; see `pip install -e ".[dev,local]"` for the local backend deps) — 160+ source files, 25,000+ LOC
+- **3,894 tests passing, 24 skipped** (skips: BigQuery-emulator and DuckDB-unsupported BQ-function integration tests; see `pip install -e ".[dev,local]"` for the local backend deps) — 160+ source files, 25,000+ LOC
 - **v0.2.0** — published to PyPI as `bq-entity-resolution`
 - **Python 3.11+** with Pydantic v2, Click, structlog, sqlglot
 - **19 entity types**, 57 column roles, 16 domain presets, 20 example configs
@@ -17,7 +17,7 @@ Python generates SQL; BigQuery (or DuckDB locally) executes it. No data leaves t
 
 ```bash
 # Tests
-python -m pytest tests/ -v                    # 3846 passing, 24 skipped, ~60s
+python -m pytest tests/ -v                    # 3894 passing, 24 skipped, ~60s
 C:/Users/amare/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/ -v  # Windows
 
 # Lint + Type Check
