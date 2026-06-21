@@ -160,6 +160,19 @@ class MatchingStage(Stage):
 
         comparisons: list[ComparisonDef] = []
         for comp in tier.comparisons:
+            # Multi-level sum scoring: graduated partial credit via a CASE cascade.
+            level_objs = self._build_sum_levels(comp, udf_dataset)
+            if level_objs:
+                comparisons.append(
+                    ComparisonDef(
+                        name=f"{comp.left}_{comp.method or 'levels'}",
+                        sql_expr="",
+                        weight=comp.weight,
+                        levels=level_objs,
+                        **self._tf_fields(comp),
+                    )
+                )
+                continue
             func = COMPARISON_FUNCTIONS.get(comp.method)
             if func is None:
                 logger.warning(
@@ -285,6 +298,52 @@ class MatchingStage(Stage):
         return [build_fellegi_sunter_sql(scoring_params)]
 
     # -- Shared helpers for both scoring strategies --------------------------
+
+    def _build_sum_levels(
+        self, comp: Any, udf_dataset: str
+    ) -> list[ComparisonLevel]:
+        """Resolve a comparison's levels into sum-scoring contributions.
+
+        Each non-else level becomes a ``ComparisonLevel`` with a boolean
+        ``sql_expr`` (raw override or resolved from ``method``) and a ``score``
+        (explicit, else graduated partial credit ``weight * m``). Returns ``[]``
+        for a plain binary comparison so the existing path is unchanged.
+        """
+        levels = getattr(comp, "levels", None)
+        if not levels:
+            return []
+        out: list[ComparisonLevel] = []
+        for lvl in levels:
+            expr = lvl.sql_expr
+            if not expr and lvl.method:
+                func = COMPARISON_FUNCTIONS.get(lvl.method)
+                if func is not None:
+                    params = dict(lvl.params or {})
+                    if udf_dataset:
+                        params["udf_dataset"] = udf_dataset
+                    try:
+                        expr = _validated_call(
+                            func, comp.left, comp.right or comp.left, **params
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Sum level '%s' on '%s' skipped (method=%s): %s",
+                            lvl.label, comp.left, lvl.method, exc,
+                        )
+                        expr = None
+            if not expr:
+                continue  # else / fallthrough level contributes 0
+            m_val = lvl.m if lvl.m is not None else 1.0
+            score = lvl.score if lvl.score is not None else comp.weight * m_val
+            out.append(
+                ComparisonLevel(
+                    label=lvl.label, sql_expr=expr,
+                    m=lvl.m if lvl.m is not None else 0.9,
+                    u=lvl.u if lvl.u is not None else 0.1,
+                    score=score,
+                )
+            )
+        return out
 
     @staticmethod
     def _tf_fields(comp: Any) -> dict[str, Any]:

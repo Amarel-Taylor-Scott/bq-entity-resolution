@@ -52,6 +52,8 @@ class ComparisonLevelDef(BaseModel):
     m: float | None = None  # P(level | match)
     u: float | None = None  # P(level | non-match)
     log_weight: float | None = None  # Explicit log-weight (auto-computed from m/u if None)
+    score: float | None = None  # Sum-scoring contribution for this level (graduated
+    # partial credit; defaults to weight*m when None). Ignored by Fellegi-Sunter.
     sql_expr: str | None = None  # Raw SQL override for this level
     tf_adjusted: bool = False  # Apply term-frequency adjustment
 

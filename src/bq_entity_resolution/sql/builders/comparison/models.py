@@ -13,13 +13,18 @@ from bq_entity_resolution.sql.utils import validate_identifier, validate_table_r
 
 @dataclass(frozen=True)
 class ComparisonLevel:
-    """A single comparison level (for Fellegi-Sunter)."""
+    """A single comparison level.
+
+    Used by Fellegi-Sunter (via ``log_weight``/``m``/``u``) and by multi-level
+    sum scoring (via ``score`` — the contribution when this level matches).
+    """
     label: str
     sql_expr: str | None  # None = ELSE clause
     log_weight: float = 0.0
     m: float = 0.9
     u: float = 0.1
     tf_adjusted: bool = False
+    score: float = 0.0  # sum-scoring contribution when this level matches
 
 
 @dataclass(frozen=True)
