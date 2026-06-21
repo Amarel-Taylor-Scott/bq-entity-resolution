@@ -7,6 +7,7 @@ all domain-specific configuration models into a single validated schema.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any, Literal
@@ -409,9 +410,20 @@ class PipelineConfig(BaseModel):
         return self.training
 
     def fq_table(self, dataset_attr: str, suffix: str) -> str:
-        """Build a fully-qualified BigQuery table name."""
+        """Build a fully-qualified BigQuery table name.
+
+        When ``project.namespace_tables`` is set, the table name is prefixed with
+        the sanitized pipeline name so pipelines sharing one project+datasets
+        stay isolated (default off → byte-identical to the historical layout).
+        """
         dataset = getattr(self.project, dataset_attr)
-        return f"{self.project.bq_project}.{dataset}.{suffix}"
+        return f"{self.project.bq_project}.{dataset}.{self._namespaced_suffix(suffix)}"
+
+    def _namespaced_suffix(self, suffix: str) -> str:
+        if not getattr(self.project, "namespace_tables", False):
+            return suffix
+        prefix = re.sub(r"[^0-9A-Za-z]+", "_", self.project.name).strip("_").lower()
+        return f"{prefix}_{suffix}" if prefix else suffix
 
     def to_yaml(self) -> str:
         """Serialize the full config to YAML for inspection and editing.

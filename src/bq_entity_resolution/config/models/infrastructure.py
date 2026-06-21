@@ -55,6 +55,10 @@ class ProjectConfig(BaseModel):
     bq_location: str = "US"
     watermark_dataset: str = "er_meta"
     udf_dataset: str = "er_udfs"
+    # Opt-in: prefix every bronze/silver/gold table with the (sanitized) pipeline
+    # name, so two pipelines sharing one project+datasets don't overwrite each
+    # other's tables (e.g. er_silver.<name>_featured). Default off = back-compat.
+    namespace_tables: bool = False
 
     @field_validator("name")
     @classmethod
