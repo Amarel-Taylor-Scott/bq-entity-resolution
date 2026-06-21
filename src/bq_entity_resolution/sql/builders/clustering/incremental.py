@@ -19,6 +19,7 @@ from bq_entity_resolution.columns import (
     CLUSTER_UID2,
     ENTITY_UID,
     LEFT_ENTITY_UID,
+    MATCH_TOTAL_SCORE,
     RIGHT_ENTITY_UID,
 )
 from bq_entity_resolution.sql.expression import SQLExpression
@@ -33,6 +34,10 @@ class IncrementalClusteringParams:
     source_table: str
     canonical_table: str
     max_iterations: int = 20
+    # Edges below this match_total_score do not drive merges (0 = legacy: all).
+    # Critical for old×old repair: a low-score edge must not merge two mature
+    # canonical entities.
+    min_edge_score: float = 0.0
 
     def __post_init__(self) -> None:
         validate_table_ref(self.all_matches_table)
@@ -101,8 +106,13 @@ def build_incremental_cluster_sql(
     lines.append(
         f"  JOIN `{params.cluster_table}` c1 ON m.{LEFT_ENTITY_UID} = c1.{ENTITY_UID}"
     )
+    edge_filter = (
+        f"\n  WHERE m.{MATCH_TOTAL_SCORE} >= {params.min_edge_score}"
+        if params.min_edge_score > 0 else ""
+    )
     lines.append(
-        f"  JOIN `{params.cluster_table}` c2 ON m.{RIGHT_ENTITY_UID} = c2.{ENTITY_UID};"
+        f"  JOIN `{params.cluster_table}` c2 ON m.{RIGHT_ENTITY_UID} = c2.{ENTITY_UID}"
+        f"{edge_filter};"
     )
     lines.append("")
 
