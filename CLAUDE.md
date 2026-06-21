@@ -490,7 +490,7 @@ See `docs/incremental_processing.md` for full guide and `config/examples/increme
 - `--resume` only skips stages when `scale.checkpoint_enabled: true` (off by default); otherwise the whole pipeline re-runs (safe — stages are idempotent via CREATE OR REPLACE — but nothing is skipped). The CLI now warns when `--resume` has no effect.
 - `DataQualityScoreGate` is a **marker** gate: it always passes (full score computation isn't wired yet) even when `monitoring.min_data_quality_score` is set.
 - `incremental.full_refresh_on_schema_change` is **not yet enforced** (no read sites); trigger a full refresh manually with `--full-refresh` on schema drift.
-- `fq_table()` has no per-pipeline component, so two default-config pipelines in one BigQuery project write to the same tables — give each pipeline its own datasets (or distinct project) to isolate.
+- By default `fq_table()` has no per-pipeline component, so two default-config pipelines in one BigQuery project would write to the same tables — set `project.namespace_tables: true` to prefix every bronze/silver/gold table with the sanitized pipeline name (`er_silver.<pipeline>_featured`) and isolate co-located pipelines (or give each its own datasets/project).
 
 See `docs/TUNING.md` for output schema reference and common tuning remediation steps.
 

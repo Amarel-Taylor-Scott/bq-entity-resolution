@@ -35,6 +35,8 @@ Key differentiators of bq-entity-resolution:
 
 | Feature | bq-entity-resolution | Splink | dedupe |
 |---------|---------------------|--------|--------|
+| **Re-resolution / merge-repair** (`old×old`) | **Yes** — a scheduled repair leaf re-merges two canonical entities a prior single-pass run wrongly split | No | No |
+| Per-stratum leaves (`new×new` / `new×old` / `old×old` / N×M) | Yes — independent blocking, scoring, heuristics, schedule | No (single pass) | No (single pass) |
 | Primary backend | BigQuery | Spark / DuckDB / Athena | Python (in-memory) |
 | Config format | YAML (config-driven) | Python API | Python API |
 | SQL preview | Yes (`preview-sql`) | Partial | No |
