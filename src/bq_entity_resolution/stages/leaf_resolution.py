@@ -20,6 +20,7 @@ from typing import Any
 
 from bq_entity_resolution.columns import (
     LEFT_ENTITY_UID,
+    MATCH_CONFIDENCE,
     MATCH_LEAF,
     MATCH_METHOD,
     MATCH_TOTAL_SCORE,
@@ -538,6 +539,10 @@ class LeafResolutionStage(Stage):
         literal so the union is independent of the scorer's extra columns.
         ``match_method`` is read from the greatest table (preserving
         ``short_circuit``) and synthesised as ``'compare'`` for sum/F-S leaves.
+        ``match_confidence`` is carried from the sum/F-S matches schema (the
+        greatest scorer has no calibrated confidence → untyped ``NULL``, whose
+        type the UNION infers from the sum/F-S branches); this lets the
+        clustering confidence floor and per-stratum gates act on leaf edges.
         ``match_tier_name`` carries the leaf name so leaf-aware tooling and
         clustering metrics keep working unchanged.
         """
@@ -545,11 +550,15 @@ class LeafResolutionStage(Stage):
         selects = []
         for name, tbl, has_method in leaf_specs:
             leaf_lit = sql_escape(name)
+            # has_method == greatest scorer: a match_method column but no
+            # calibrated match_confidence; sum/F-S has confidence but no method.
             method_col = MATCH_METHOD if has_method else "'compare'"
+            conf_col = "NULL" if has_method else MATCH_CONFIDENCE
             selects.append(
                 f"SELECT {LEFT_ENTITY_UID}, {RIGHT_ENTITY_UID}, "
                 f"{MATCH_TOTAL_SCORE}, '{leaf_lit}' AS {MATCH_LEAF}, "
-                f"{method_col} AS {MATCH_METHOD} "
+                f"{method_col} AS {MATCH_METHOD}, "
+                f"{conf_col} AS {MATCH_CONFIDENCE} "
                 f"FROM `{tbl}`"
             )
         union = "\n  UNION ALL\n  ".join(selects)
@@ -561,7 +570,8 @@ class LeafResolutionStage(Stage):
             f"  MAX({MATCH_TOTAL_SCORE}) AS {MATCH_TOTAL_SCORE},\n"
             f"  ANY_VALUE({MATCH_LEAF}) AS {MATCH_LEAF},\n"
             f"  ANY_VALUE({MATCH_LEAF}) AS match_tier_name,\n"
-            f"  MAX({MATCH_METHOD}) AS {MATCH_METHOD}\n"
+            f"  MAX({MATCH_METHOD}) AS {MATCH_METHOD},\n"
+            f"  MAX({MATCH_CONFIDENCE}) AS {MATCH_CONFIDENCE}\n"
             f"FROM (\n  {union}\n)\n"
             f"GROUP BY {LEFT_ENTITY_UID}, {RIGHT_ENTITY_UID}"
         )
