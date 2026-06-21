@@ -15,6 +15,30 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from bq_entity_resolution.config.models.blocking import TierBlockingConfig
 from bq_entity_resolution.sql.utils import validate_identifier
 
+# Comparison `params` values are interpolated into SQL by the comparison
+# registry, so string values are screened for injection metacharacters/keywords.
+# (Numeric thresholds, booleans, and identifier-like dataset names pass cleanly.)
+_PARAM_INJECTION_RE = re.compile(
+    r";|--|/\*|\*/|\bDROP\b|\bALTER\b|\bDELETE\b|\bINSERT\b|\bUPDATE\b|"
+    r"\bUNION\b|\bGRANT\b|\bREVOKE\b|\bEXEC(?:UTE)?\b|\bTRUNCATE\b|\bMERGE\b",
+    re.IGNORECASE,
+)
+
+
+def _screen_param_value(key: str, val: Any) -> None:
+    """Raise if a (possibly nested) string param value looks like SQL injection."""
+    if isinstance(val, str):
+        if _PARAM_INJECTION_RE.search(val):
+            raise ValueError(
+                f"comparison param {key!r} contains unsafe SQL: {val!r}"
+            )
+    elif isinstance(val, (list, tuple)):
+        for item in val:
+            _screen_param_value(key, item)
+    elif isinstance(val, dict):
+        for k, item in val.items():
+            _screen_param_value(f"{key}.{k}", item)
+
 _SQL_INJECTION_PATTERN = re.compile(
     r";\s*|--\s|/\*|\bDROP\b|\bALTER\b|\bCREATE\b|\bTRUNCATE\b|\bGRANT\b|\bREVOKE\b",
     re.IGNORECASE,
@@ -128,6 +152,20 @@ class ComparisonDef(BaseModel):
         """Validate column names are safe SQL identifiers."""
         if v:
             validate_identifier(v, context="comparison column")
+        return v
+
+    @field_validator("params")
+    @classmethod
+    def _validate_params_safe(cls, v: dict[str, Any]) -> dict[str, Any]:
+        """Screen string param values for SQL injection.
+
+        The comparison registry interpolates ``params`` into generated SQL, so a
+        malicious or mistyped string value is a real (if low-severity, single-
+        operator) injection vector. Numbers/booleans/identifier-like strings are
+        unaffected.
+        """
+        for key, val in v.items():
+            _screen_param_value(key, val)
         return v
 
     @model_validator(mode="after")

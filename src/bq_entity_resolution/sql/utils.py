@@ -113,15 +113,14 @@ def format_watermark_value(val: Any) -> str:
 
 
 def safe_col(side: str, name: str) -> str:
-    """Generate a validated column reference for SQL (e.g., ``l.first_name``).
+    """Generate a validated ``side.name`` column reference (e.g. ``l.first_name``).
 
-    Validates that ``name`` is a safe SQL identifier and ``side`` is
-    one of ``l`` or ``r`` (left/right table alias).
-
-    This is the single entry point for all comparison and builder code
-    that interpolates column names into SQL.
-
-    Raises ValueError if the column name contains unsafe characters.
+    Validates that ``name`` is a safe SQL identifier and ``side`` is one of
+    ``l``/``r`` (left/right table alias). A convenience helper for builders that
+    want both checks in one call; column names elsewhere are validated directly
+    via :func:`validate_identifier` (e.g. in the comparison registry's
+    ``_validated_call``), and comparison ``params`` are screened by
+    ``ComparisonDef``. Raises ValueError if the column name is unsafe.
     """
     if side not in ("l", "r"):
         raise ValueError(f"side must be 'l' or 'r', got {side!r}")
