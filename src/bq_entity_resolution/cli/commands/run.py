@@ -28,6 +28,18 @@ logger = logging.getLogger(__name__)
 @click.option("--drain", is_flag=True, help="Auto-loop through batches until all records processed")
 @click.option("--resume", is_flag=True, help="Resume from last checkpoint on failure")
 @click.option("--tier", multiple=True, help="Run only specific tier(s) by name")
+@click.option(
+    "--repair",
+    is_flag=True,
+    help="Also run scheduled repair leaves (e.g. old×old merge-repair). "
+    "Requires a config with explicit 'leaves:'.",
+)
+@click.option(
+    "--leaf",
+    multiple=True,
+    help="Run only the named resolution leaf(s), ignoring their schedule "
+    "(repeatable). Requires a config with explicit 'leaves:'.",
+)
 def run(
     config: str,
     defaults: str | None,
@@ -36,6 +48,8 @@ def run(
     drain: bool,
     resume: bool,
     tier: tuple[str, ...],
+    repair: bool,
+    leaf: tuple[str, ...],
 ) -> None:
     """Execute the entity resolution pipeline."""
     from bq_entity_resolution.config.loader import load_config
@@ -72,7 +86,28 @@ def run(
                 f"{[t.name for t in cfg.matching_tiers]}"
             )
 
-        pipeline = Pipeline(cfg)
+        # Leaf selection (--repair / --leaf) only applies when the config opts
+        # into leaf-based resolution via an explicit `leaves:` block.
+        if (repair or leaf) and not cfg.leaves:
+            click.echo(
+                "WARNING: --repair/--leaf require a config with an explicit "
+                "'leaves:' block; the historical tier path will run instead.",
+                err=True,
+            )
+        if leaf:
+            known = {lf.name for lf in cfg.effective_leaves()}
+            unknown = sorted(set(leaf) - known)
+            if unknown:
+                click.echo(
+                    f"Unknown leaf(s): {unknown}. Available: {sorted(known)}",
+                    err=True,
+                )
+                sys.exit(1)
+            click.echo(f"Running only leaf(s): {list(leaf)}")
+        elif repair:
+            click.echo("Repair run: including scheduled repair leaves (manual/cron).")
+
+        pipeline = Pipeline(cfg, leaf_repair=repair, leaf_only=leaf or None)
 
         if dry_run:
             plan = pipeline.plan(full_refresh=full_refresh)
@@ -109,6 +144,15 @@ def run(
                         f".pipeline_checkpoints"
                     )
                     checkpoint_manager = CheckpointManager(bq_client, checkpoint_table)
+                elif resume:
+                    click.echo(
+                        "WARNING: --resume has no effect because "
+                        "scale.checkpoint_enabled is false — the whole pipeline "
+                        "re-runs from the start. Re-running is safe (stages are "
+                        "idempotent: CREATE OR REPLACE), but no stages are skipped. "
+                        "Set scale.checkpoint_enabled: true to actually resume.",
+                        err=True,
+                    )
 
                 result = pipeline.run(
                     backend=backend,

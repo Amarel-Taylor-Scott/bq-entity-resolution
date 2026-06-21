@@ -73,6 +73,12 @@ from bq_entity_resolution.sql.builders.job_tracking import (
     build_run_comparison_sql,
     compute_sql_hash,
 )
+from bq_entity_resolution.sql.builders.leaf import (
+    LeafBlockingPath,
+    LeafScoreTerm,
+    LeafSQLParams,
+    build_leaf_sql,
+)
 from bq_entity_resolution.sql.builders.monitoring import build_persist_sql_log_sql
 from bq_entity_resolution.sql.builders.placeholder_tracking import (
     PlaceholderScanColumn,
@@ -140,6 +146,11 @@ __all__ = [
     "build_ingest_labels_sql",
     "ActiveLearningParams",
     "IngestLabelsParams",
+    # Leaf-based resolution
+    "build_leaf_sql",
+    "LeafSQLParams",
+    "LeafBlockingPath",
+    "LeafScoreTerm",
     # Watermark / Checkpoint
     "build_create_watermark_table_sql",
     "build_read_watermark_sql",

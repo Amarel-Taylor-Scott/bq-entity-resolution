@@ -35,11 +35,13 @@ Key differentiators of bq-entity-resolution:
 
 | Feature | bq-entity-resolution | Splink | dedupe |
 |---------|---------------------|--------|--------|
+| **Re-resolution / merge-repair** (`old×old`) | **Yes** — a scheduled repair leaf re-merges two canonical entities a prior single-pass run wrongly split | No | No |
+| Per-stratum leaves (`new×new` / `new×old` / `old×old` / N×M) | Yes — independent blocking, scoring, heuristics, schedule | No (single pass) | No (single pass) |
 | Primary backend | BigQuery | Spark / DuckDB / Athena | Python (in-memory) |
 | Config format | YAML (config-driven) | Python API | Python API |
 | SQL preview | Yes (`preview-sql`) | Partial | No |
 | Incremental processing | Yes (composite watermarks, drain mode) | Limited | No |
-| Scale ceiling | 15B+ records (tested) | Depends on backend | ~1M records |
+| Scale ceiling | 15B+ records (designed for) | Depends on backend | ~1M records |
 | Checkpoint/resume | Yes | No | No |
 | Local testing | DuckDB backend | DuckDB backend | Native |
 
@@ -343,7 +345,7 @@ Higher values are more conservative (fewer but higher-quality matches). Start ar
 
 ### How many records can this handle?
 
-The pipeline has been tested with datasets exceeding 15 billion records using incremental processing. Guidelines by scale:
+The pipeline is architected for datasets exceeding 15 billion records using incremental processing (composite watermarks, drain mode, and cross-batch blocking against the canonical index). Guidelines by scale:
 
 | Records | Recommended Approach |
 |---------|---------------------|

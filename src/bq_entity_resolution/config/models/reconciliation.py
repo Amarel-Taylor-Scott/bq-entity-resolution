@@ -47,6 +47,11 @@ class ClusteringConfig(BaseModel):
     method: Literal["connected_components", "star", "best_match"] = "connected_components"
     max_iterations: int = 20
     min_cluster_confidence: float = 0.0
+    # Minimum match_total_score an edge needs to drive a connected-components /
+    # incremental MERGE. 0.0 = every accepted pair merges (legacy). Raise it so a
+    # single borderline (just-over-threshold) or false edge can't collapse two
+    # true clusters via transitive closure — the dominant over-merge failure.
+    min_merge_score: float = 0.0
 
     @field_validator("max_iterations")
     @classmethod
@@ -55,11 +60,11 @@ class ClusteringConfig(BaseModel):
             raise ValueError("max_iterations must be >= 1")
         return v
 
-    @field_validator("min_cluster_confidence")
+    @field_validator("min_cluster_confidence", "min_merge_score")
     @classmethod
     def _non_negative_confidence(cls, v: float) -> float:
         if v < 0.0:
-            raise ValueError("min_cluster_confidence must be >= 0.0")
+            raise ValueError("value must be >= 0.0")
         return v
 
 

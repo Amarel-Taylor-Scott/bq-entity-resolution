@@ -8,8 +8,8 @@
 **bq-entity-resolution** is a config-driven entity resolution pipeline for BigQuery.
 Python generates SQL; BigQuery (or DuckDB locally) executes it. No data leaves the warehouse.
 
-- **3,846 tests passing, 24 skipped** (skips: BigQuery-emulator and DuckDB-unsupported BQ-function integration tests; see `pip install -e ".[dev,local]"` for the local backend deps) — 160+ source files, 25,000+ LOC
-- **v0.2.0** — published to PyPI as `bq-entity-resolution`
+- **3,960+ tests passing, 24 skipped** (skips: BigQuery-emulator and DuckDB-unsupported BQ-function integration tests; see `pip install -e ".[dev,local]"` for the local backend deps) — 175+ source files, 30,000+ LOC
+- **v0.2.0** — install from source; PyPI publish is release-gated (`.github/workflows/publish.yml`)
 - **Python 3.11+** with Pydantic v2, Click, structlog, sqlglot
 - **19 entity types**, 57 column roles, 16 domain presets, 20 example configs
 
@@ -17,7 +17,7 @@ Python generates SQL; BigQuery (or DuckDB locally) executes it. No data leaves t
 
 ```bash
 # Tests
-python -m pytest tests/ -v                    # 3846 passing, 24 skipped, ~60s
+python -m pytest tests/ -v                    # 3960+ passing, 24 skipped, ~90s
 C:/Users/amare/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/ -v  # Windows
 
 # Lint + Type Check
@@ -47,13 +47,12 @@ bq-er describe --config config.yml                  # Describe pipeline configur
 
 **Local development (no BigQuery needed):**
 ```bash
-pip install "bq-entity-resolution[local]"
-# Uses DuckDB backend — no credentials required
+pip install -e ".[local]"   # from source; uses DuckDB backend — no credentials required
 ```
 
 **BigQuery production:**
 ```bash
-pip install bq-entity-resolution
+pip install -e .   # from source (pre-release)
 
 # Option A: gcloud CLI auth (developer workstation)
 gcloud auth application-default login
@@ -302,7 +301,9 @@ spec:
           configMap:
             name: er-pipeline-config
       restartPolicy: Never
-  backoffLimit: 2   # Retry on failure (checkpoint/resume handles idempotency)
+  backoffLimit: 2   # Safe to retry: stages are idempotent (CREATE OR REPLACE).
+                    # NOTE: a retried pod re-runs the whole pipeline from the
+                    # start unless scale.checkpoint_enabled: true (off by default).
 ```
 
 ### Argo Workflows
@@ -486,6 +487,10 @@ See `docs/incremental_processing.md` for full guide and `config/examples/increme
 - PII redaction in SQL audit logs (implemented in executor via `_redact_sql()`; runtime logs not yet covered)
 - Distributed locking for concurrent runs (implemented in `pipeline/lock.py`)
 - Audit trail is optional (should be mandatory for regulated industries)
+- `--resume` only skips stages when `scale.checkpoint_enabled: true` (off by default); otherwise the whole pipeline re-runs (safe — stages are idempotent via CREATE OR REPLACE — but nothing is skipped). The CLI now warns when `--resume` has no effect.
+- `DataQualityScoreGate` is a **marker** gate: it always passes (full score computation isn't wired yet) even when `monitoring.min_data_quality_score` is set.
+- `incremental.full_refresh_on_schema_change` is **not yet enforced** (no read sites); trigger a full refresh manually with `--full-refresh` on schema drift.
+- By default `fq_table()` has no per-pipeline component, so two default-config pipelines in one BigQuery project would write to the same tables — set `project.namespace_tables: true` to prefix every bronze/silver/gold table with the sanitized pipeline name (`er_silver.<pipeline>_featured`) and isolate co-located pipelines (or give each its own datasets/project).
 
 See `docs/TUNING.md` for output schema reference and common tuning remediation steps.
 

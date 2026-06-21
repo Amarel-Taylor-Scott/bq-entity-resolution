@@ -78,9 +78,9 @@ class TestPresetSynthesis:
 
     def test_default_leaves_cross_batch(self) -> None:
         leaves = default_leaves(cross_batch=True)
-        assert [l.name for l in leaves] == ["new_x_new", "new_x_old"]
+        assert [leaf.name for leaf in leaves] == ["new_x_new", "new_x_old"]
         assert leaves[0].is_self_join and not leaves[1].is_self_join
 
     def test_default_leaves_no_cross_batch(self) -> None:
         leaves = default_leaves(cross_batch=False)
-        assert [l.name for l in leaves] == ["new_x_new"]
+        assert [leaf.name for leaf in leaves] == ["new_x_new"]

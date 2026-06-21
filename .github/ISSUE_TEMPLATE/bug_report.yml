@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a problem so it can be fixed
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Minimal config + command. Include the generated SQL if relevant.
+      placeholder: |
+        1. Config (YAML snippet):
+        2. Command:
+        3. Observed vs. expected:
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Backend
+      options:
+        - BigQuery
+        - DuckDB
+        - Not applicable / SQL generation only
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Output of `git rev-parse --short HEAD` or release tag.
+    validations:
+      required: false

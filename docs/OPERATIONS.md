@@ -211,10 +211,10 @@ The canonical index accumulates entities across batches. If corrupted:
 ```sql
 -- Check canonical index health
 SELECT COUNT(*) as total, COUNT(DISTINCT cluster_id) as clusters
-FROM `project.er_silver.pipeline_canonical_index`;
+FROM `project.er_gold.canonical_index`;
 
 -- If corrupt, drop and rebuild from gold output
-DROP TABLE IF EXISTS `project.er_silver.pipeline_canonical_index`;
+DROP TABLE IF EXISTS `project.er_gold.canonical_index`;
 -- Then run full refresh to rebuild
 -- bq-er run --config config.yml --full-refresh
 ```

@@ -105,6 +105,12 @@ MATCH_TIER_NAME = "match_tier_name"
 MATCH_TIER_PRIORITY = "match_tier_priority"
 MATCH_DETAIL = "match_detail"
 MATCHED_AT = "matched_at"
+# Name of the leaf (left×right partition unit) that produced the candidate pair.
+# Tags every leaf-emitted pair so leaf metrics and clustering stay leaf-aware.
+MATCH_LEAF = "match_leaf"
+# How the pair was produced within a leaf: 'compare' (scored) or
+# 'short_circuit' (exact-key auto-accept).
+MATCH_METHOD = "match_method"
 MATCH_UNCERTAINTY = "match_uncertainty"
 MATCH_BAND = "match_band"
 IS_AUTO_MATCH = "is_auto_match"

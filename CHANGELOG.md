@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Leaf-based resolution — full implementation (all regimes).** Each comparison stratum (`new×new`, `new×old`, `old×old`, generic `N×M`) is a first-class, independently-configured *leaf* with its own blocking, scoring, heuristics, and schedule:
+  - Scheduling & CLI: `LeafDef.schedule` (`every_run`/`manual`/`cron`) + dependency-free cron evaluator (`scheduling.py`); `bq-er run --repair`, `bq-er run --leaf NAME`, `bq-er preview-sql --leaf NAME`.
+  - `touched_only` repair watermark (`sql/builders/leaf_repair.py`, `leaf_repair_watermarks` table) so `old×old` only re-compares canonicals changed since the last repair.
+  - Modular scoring: `LeafDef.scoring` (`greatest`/`sum`/`fellegi_sunter`) routes leaves to the production scoring engine (soft signals, hard negatives, banding, TF) via `build_leaf_candidates_sql` + per-side source tables on `SumScoringParams`/`FellegiSunterParams`.
+  - Entity-level consensus comparison for `new×old` (`LeafHeuristics.entity_level`, `sql/builders/leaf_entity.py`) — compare new records against canonical *entities* (one most-frequent-value row per cluster), not every historical record.
+  - `old×old` merge-repair persistence: `build_repair_cluster_update_sql` writes back cluster reassignments for existing canonicals not in the current batch (the batch-only MERGE dropped them).
+  - Per-leaf metrics (`sql/builders/leaf_metrics.py`): candidate pairs, comparison space, reduction ratio — gated on `monitoring.blocking_metrics`.
+  - Example config `config/examples/leaves_resolution.yml`.
 - Placeholder nullification for name/address roles: `nullify_placeholder_name` and `nullify_placeholder_address` feature functions with auto-injection for first_name, last_name, middle_name, full_name, address_line_1, address_line_2 roles
 - Per-run cost alerting and budget guards: `cost_alert_threshold_bytes` (warning) and `cost_abort_threshold_bytes` (abort) on `JobTrackingConfig` with cumulative tracking in `PipelineExecutor`
 - Run comparison queries: `build_run_comparison_sql()` FULL OUTER JOINs two pipeline runs by `sql_hash` showing bytes_billed_delta, duration_delta, and comparison_status (NEW/REMOVED/MATCHED)

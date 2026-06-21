@@ -55,6 +55,10 @@ class ProjectConfig(BaseModel):
     bq_location: str = "US"
     watermark_dataset: str = "er_meta"
     udf_dataset: str = "er_udfs"
+    # Opt-in: prefix every bronze/silver/gold table with the (sanitized) pipeline
+    # name, so two pipelines sharing one project+datasets don't overwrite each
+    # other's tables (e.g. er_silver.<name>_featured). Default off = back-compat.
+    namespace_tables: bool = False
 
     @field_validator("name")
     @classmethod
@@ -264,6 +268,9 @@ class IncrementalConfig(BaseModel):
     partition_cursors: list[PartitionCursorConfig] = Field(default_factory=list)
     hash_cursor: HashCursorConfig | None = None
     batch_size: int = 2_000_000
+    # EXPERIMENTAL / not yet enforced: no read sites wire automatic
+    # schema-change detection yet. Triggering a full refresh on schema drift is
+    # still a manual step (`bq-er run --full-refresh`). Kept for forward-compat.
     full_refresh_on_schema_change: bool = True
     drain_mode: bool = False
     drain_max_iterations: int = 100

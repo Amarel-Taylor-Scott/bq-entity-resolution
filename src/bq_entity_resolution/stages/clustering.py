@@ -107,6 +107,7 @@ class ClusteringStage(Stage):
             max_iter,
         )
         min_conf = getattr(clustering_cfg, "min_cluster_confidence", 0.0)
+        min_merge = getattr(clustering_cfg, "min_merge_score", 0.0)
 
         matches_tbl = self.inputs["all_matches"].fq_name
         cluster_tbl = self.outputs["clusters"].fq_name
@@ -120,6 +121,7 @@ class ClusteringStage(Stage):
                 source_table=source_tbl,
                 canonical_table=self.inputs["canonical_index"].fq_name,
                 max_iterations=max_iter,
+                min_edge_score=min_merge,
             )
             return [build_incremental_cluster_sql(params)]
 
@@ -147,5 +149,6 @@ class ClusteringStage(Stage):
             cluster_table=cluster_tbl,
             source_table=source_tbl,
             max_iterations=max_iter,
+            min_edge_score=min_merge,
         )
         return [build_cluster_assignment_sql(params_cc)]

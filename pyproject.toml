@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
-    {name = "bq-entity-resolution contributors"},
+    {name = "Amarel Taylor Scott"},
 ]
 keywords = [
     "bigquery",

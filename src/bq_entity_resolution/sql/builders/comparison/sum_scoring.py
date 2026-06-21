@@ -33,6 +33,23 @@ from bq_entity_resolution.sql.expression import SQLExpression
 from bq_entity_resolution.sql.utils import sql_escape
 
 
+def _level_cascade(comp) -> tuple[str, str]:
+    """(contribution, matched-indicator) SQL for a multi-level comparison.
+
+    contribution: ``CASE WHEN lvl1 THEN score1 ... ELSE 0.0 END`` — graduated
+    partial credit (first matching level wins). matched-indicator: 1 when any
+    level matched, else 0 (for ``min_matching_comparisons``).
+    """
+    whens = [f"WHEN {lvl.sql_expr} THEN {lvl.score}" for lvl in comp.levels if lvl.sql_expr]
+    matched = [f"({lvl.sql_expr})" for lvl in comp.levels if lvl.sql_expr]
+    if not whens:
+        return "0.0", "0"
+    return (
+        "CASE " + " ".join(whens) + " ELSE 0.0 END",
+        "CASE WHEN (" + " OR ".join(matched) + ") THEN 1 ELSE 0 END",
+    )
+
+
 def build_sum_scoring_sql(params: SumScoringParams) -> SQLExpression:
     """Build sum-based scoring SQL.
 
@@ -57,10 +74,14 @@ def build_sum_scoring_sql(params: SumScoringParams) -> SQLExpression:
 
     # Individual comparison scores
     for comp in params.comparisons:
-        parts.append(
-            f"    CASE WHEN {comp.sql_expr} THEN 1.0 ELSE 0.0 END "
-            f"AS {match_score_column(comp.name)},"
-        )
+        if comp.levels:
+            contribution, _ = _level_cascade(comp)
+            parts.append(f"    {contribution} AS {match_score_column(comp.name)},")
+        else:
+            parts.append(
+                f"    CASE WHEN {comp.sql_expr} THEN 1.0 ELSE 0.0 END "
+                f"AS {match_score_column(comp.name)},"
+            )
 
     parts.append("")
     # Weighted aggregate score
@@ -68,7 +89,10 @@ def build_sum_scoring_sql(params: SumScoringParams) -> SQLExpression:
 
     score_terms: list[str] = []
     for comp in params.comparisons:
-        if comp.tf_enabled and params.tf_table:
+        if comp.levels:
+            contribution, _ = _level_cascade(comp)
+            score_terms.append(f"      ({contribution})")
+        elif comp.tf_enabled and params.tf_table:
             score_terms.append(
                 f"      CASE WHEN {comp.sql_expr}\n"
                 f"        THEN {comp.weight} * LOG(1.0 / GREATEST("
@@ -128,11 +152,11 @@ def build_sum_scoring_sql(params: SumScoringParams) -> SQLExpression:
     # so BQ can co-locate the left and right lookups in storage.
     parts.append(f"  FROM `{params.candidates_table}` c")
     parts.append(
-        f"  INNER JOIN `{params.source_table}` l "
+        f"  INNER JOIN `{params.eff_left_source}` l "
         f"ON c.{LEFT_ENTITY_UID} = l.{ENTITY_UID}"
     )
     parts.append(
-        f"  INNER JOIN `{params.source_table}` r "
+        f"  INNER JOIN `{params.eff_right_source}` r "
         f"ON c.{RIGHT_ENTITY_UID} = r.{ENTITY_UID}"
     )
 
@@ -221,10 +245,15 @@ def build_sum_scoring_sql(params: SumScoringParams) -> SQLExpression:
     # Minimum matching comparisons filter: require at least N comparisons
     # to score > 0 before accepting the pair.
     if params.threshold.min_matching_comparisons > 0:
-        match_count_terms = [
-            f"(CASE WHEN {comp.sql_expr} THEN 1 ELSE 0 END)"
-            for comp in params.comparisons
-        ]
+        match_count_terms = []
+        for comp in params.comparisons:
+            if comp.levels:
+                _, indicator = _level_cascade(comp)
+                match_count_terms.append(f"({indicator})")
+            else:
+                match_count_terms.append(
+                    f"(CASE WHEN {comp.sql_expr} THEN 1 ELSE 0 END)"
+                )
         match_count_expr = "\n    + ".join(match_count_terms)
         parts.append(
             f"AND (\n    {match_count_expr}\n"

@@ -37,7 +37,7 @@ Usage:
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -114,6 +114,8 @@ class Pipeline:
         dag_builder: DagBuilder | None = None,
         stage_overrides: dict[str, Stage] | None = None,
         exclude_stages: set[str] | None = None,
+        leaf_repair: bool = False,
+        leaf_only: Sequence[str] | None = None,
     ):
         self._config = config
         if dag_builder:
@@ -127,6 +129,8 @@ class Pipeline:
                 config,
                 stage_overrides=stage_overrides,
                 exclude_stages=effective_excludes or None,
+                leaf_repair=leaf_repair,
+                leaf_only=leaf_only,
             )
         self._gates = (
             quality_gates

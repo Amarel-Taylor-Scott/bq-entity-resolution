@@ -15,6 +15,7 @@ imports continue to work unchanged.
 from bq_entity_resolution.config.models.blocking import *  # noqa: F401,F403
 from bq_entity_resolution.config.models.features import *  # noqa: F401,F403
 from bq_entity_resolution.config.models.infrastructure import *  # noqa: F401,F403
+from bq_entity_resolution.config.models.leaves import *  # noqa: F401,F403
 from bq_entity_resolution.config.models.matching import *  # noqa: F401,F403
 from bq_entity_resolution.config.models.pipeline import *  # noqa: F401,F403
 from bq_entity_resolution.config.models.reconciliation import *  # noqa: F401,F403
@@ -38,6 +39,10 @@ __all__ = [
     # blocking
     "BlockingPathDef",
     "TierBlockingConfig",
+    # leaves
+    "PartitionDef",
+    "LeafDef",
+    "LeafHeuristics",
     # matching
     "ComparisonLevelDef",
     "TermFrequencyConfig",

@@ -198,18 +198,26 @@ class TestPopulateCanonicalIndexMerge:
         assert "proj.ds.featured" in sql
         assert "proj.ds.clusters" in sql
 
-    def test_no_separate_update_and_insert(self):
-        """MERGE replaces the old UPDATE+INSERT pattern."""
+    def test_broad_update_plus_single_merge(self):
+        """A broad cluster-id update precedes a single batch-upsert MERGE.
+
+        The MERGE alone sources only from the current batch (``featured``), so
+        it cannot persist cluster reassignments for entities not in the batch —
+        e.g. an old×old repair that merges two existing canonicals. The broad
+        UPDATE-from-clusters step covers all existing canonicals; the MERGE then
+        upserts the current batch.
+        """
         params = PopulateCanonicalIndexParams(
             canonical_table="proj.ds.canonical_index",
             source_table="proj.ds.featured",
             cluster_table="proj.ds.clusters",
         )
         sql = build_populate_canonical_index_sql(params).render()
-        # Should NOT have separate UPDATE and INSERT statements
         assert sql.count("MERGE INTO") == 1
-        # Old pattern would have separate UPDATE ... WHERE
-        assert "UPDATE `proj.ds.canonical_index`" not in sql
+        # Broad update over ALL existing canonicals (covers non-batch merges).
+        assert "UPDATE `proj.ds.canonical_index` ci" in sql
+        assert "FROM `proj.ds.clusters` cl" in sql
+        assert "ci.cluster_id != cl.cluster_id" in sql
 
     def test_merge_uses_entity_uid_join(self):
         """MERGE joins on entity_uid."""

@@ -1,9 +1,10 @@
 # bq-entity-resolution
 
-[![PyPI version](https://img.shields.io/pypi/v/bq-entity-resolution.svg)](https://pypi.org/project/bq-entity-resolution/)
-[![Python](https://img.shields.io/pypi/pyversions/bq-entity-resolution.svg)](https://pypi.org/project/bq-entity-resolution/)
+[![version](https://img.shields.io/badge/version-0.2.0-blue.svg)](pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-3846%20passing%2C%2024%20skipped-brightgreen.svg)]()
+[![CI](https://github.com/Amarel-Taylor-Scott/bq-entity-resolution/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-3960%2B%20passing%2C%2024%20skipped-brightgreen.svg)]()
 
 A configurable, multi-tier entity resolution pipeline for Google BigQuery. Python handles configuration and SQL generation; BigQuery executes all data processing. No data leaves the warehouse.
 
@@ -25,7 +26,7 @@ The `old × old` repair leaf is the headline capability no single-pass tool offe
 
 ### Status — honest
 
-This is shipping in stages, presented exactly as far as it has landed:
+**Fully landed — every regime (new×new / new×old / old×old / N×M), tested.** Each piece, with its artifact:
 
 - **Design** — full design doc: [`docs/leaf-resolution-design.md`](docs/leaf-resolution-design.md) (abstraction, SQL shape, executor flow, heuristics catalogue, migration, test plan, phasing).
 - **Working prototype** — [`examples/leaf_prototype.py`](examples/leaf_prototype.py), a standalone DuckDB script (no BigQuery needed) that runs `new×new` / `new×old` / `old×old` end to end and demonstrates the `old×old` repair leaf merging two canonicals that a single-pass pipeline leaves permanently split:
@@ -39,8 +40,29 @@ This is shipping in stages, presented exactly as far as it has landed:
   #    (was C1,C3)  101:Robert Lee + 103:Bob Lee + 203:Roberto Lee   ← repair merged C1+C3
   ```
 
-- **Config layer (landed)** — Pydantic v2 models in [`config/models/leaves.py`](src/bq_entity_resolution/config/models/leaves.py) (`PartitionDef`, `LeafDef`, `LeafHeuristics`, preset synthesis with back-compat), covered by [`tests/unit/config/test_leaves.py`](tests/unit/config/test_leaves.py) (passing). Configs without a `leaves:` block synthesize the current behaviour, so existing pipelines are unchanged.
-- **In progress** — the SQL builder (`sql/builders/leaf.py`) and executor-stage integration that compile leaves to BigQuery SQL. Tracked in the design doc's phasing section.
+- **Config layer (landed)** — Pydantic v2 models in [`config/models/leaves.py`](src/bq_entity_resolution/config/models/leaves.py) (`PartitionDef`, `LeafDef`, `LeafHeuristics`, preset synthesis with back-compat), covered by [`tests/unit/config/test_leaves.py`](tests/unit/config/test_leaves.py). Configs without a `leaves:` block synthesize the current behaviour, so existing pipelines are byte-identical and unchanged.
+- **SQL builder (landed)** — [`sql/builders/leaf.py`](src/bq_entity_resolution/sql/builders/leaf.py): a frozen-dataclass builder (`LeafSQLParams` → `build_leaf_sql()` → `SQLExpression`) that emits each leaf's candidate-pair SQL — partition selection, blocking join, scoring, self-join dedup guard, exact-key short-circuit `UNION ALL`, and `max_pairs` cap. Unit-tested in [`tests/unit/sql/builders/test_leaf.py`](tests/unit/sql/builders/test_leaf.py).
+- **Executor stage (landed)** — [`stages/leaf_resolution.py`](src/bq_entity_resolution/stages/leaf_resolution.py) runs every enabled leaf, tags the pairs by leaf name, and unions them into the existing clustering step. Wired into the DAG only when a config opts into `leaves:`, so the historical pipeline is untouched by default.
+- **Runnable demo (landed)** — [`examples/leaf_resolution_demo.py`](examples/leaf_resolution_demo.py) drives the *packaged* builder against the DuckDB backend (no BigQuery) end to end:
+
+  ```bash
+  python examples/leaf_resolution_demo.py
+  # ── leaf new_x_new — 201 ↔ 202 (same email)
+  # ── leaf new_x_old — 203 → 101, 204 → 102 (exact-key short-circuit)
+  # ── leaf old_x_old — 101 ↔ 103 (merge repair)
+  # ══ resolved clusters (4 entities from 8 records) ══
+  # OK: 8 records resolved to 4 entities.
+  ```
+
+  End-to-end coverage on the DuckDB backend lives in [`tests/integration/test_leaf_resolution_e2e.py`](tests/integration/test_leaf_resolution_e2e.py).
+
+- **Scheduling & CLI (landed)** — `LeafDef.schedule` (`every_run`/`manual`/`cron`) + a dependency-free cron evaluator ([`scheduling.py`](src/bq_entity_resolution/scheduling.py)); `bq-er run --repair`, `bq-er run --leaf NAME`, `bq-er preview-sql --leaf NAME`. So the `old×old` repair leaf actually runs on its own cadence.
+- **Repair watermark / `touched_only` (landed)** — [`sql/builders/leaf_repair.py`](src/bq_entity_resolution/sql/builders/leaf_repair.py): `old×old` only re-compares canonicals changed since the last repair, so re-resolution stays affordable.
+- **Modular scoring (landed)** — `LeafDef.scoring` routes each leaf to the production `sum`/`fellegi_sunter` engine (soft signals, hard negatives, banding, TF) instead of a bespoke scorer; cross-partition leaves bind `featured × canonical_index` as left/right sources.
+- **Entity-level `new×old` (landed)** — [`sql/builders/leaf_entity.py`](src/bq_entity_resolution/sql/builders/leaf_entity.py) compares new records against canonical *entities* (one consensus row per cluster), not every historical record.
+- **`old×old` merge-repair persistence (landed)** — re-clustered existing canonicals are written back to the canonical index ([`build_repair_cluster_update_sql`](src/bq_entity_resolution/sql/builders/clustering/incremental.py)), proven end-to-end in [`tests/integration/test_old_x_old_merge_repair.py`](tests/integration/test_old_x_old_merge_repair.py).
+- **Per-leaf metrics (landed)** — candidate pairs + reduction ratio per leaf ([`sql/builders/leaf_metrics.py`](src/bq_entity_resolution/sql/builders/leaf_metrics.py)).
+- **Example config** — [`config/examples/leaves_resolution.yml`](config/examples/leaves_resolution.yml) wires all three regimes with realistic heuristics.
 
 ## Why This Tool?
 
@@ -57,10 +79,12 @@ This is shipping in stages, presented exactly as far as it has landed:
 ## Install
 
 ```bash
-pip install bq-entity-resolution
+# From source (PyPI publish is release-gated via .github/workflows/publish.yml):
+git clone https://github.com/Amarel-Taylor-Scott/bq-entity-resolution.git
+cd bq-entity-resolution
 
 # With DuckDB for local testing (no BigQuery credentials needed):
-pip install "bq-entity-resolution[local]"
+pip install -e ".[local]"
 
 # For development:
 pip install -e ".[dev,local]"
@@ -486,8 +510,8 @@ pipeline.run(backend=DuckDBBackend())
 
 ```bash
 pip install -e ".[dev,local]"
-python -m pytest tests/ -v               # 3846 passing, 24 skipped, ~60s
-python -m ruff check src/                 # lint
+python -m pytest tests/ -q               # 3960+ passing, 24 skipped, ~90s
+python -m ruff check src/ tests/          # lint (matches CI)
 python -m mypy src/                       # type check
 ```
 

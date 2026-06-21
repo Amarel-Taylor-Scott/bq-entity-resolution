@@ -152,11 +152,11 @@ def build_fellegi_sunter_sql(params: FellegiSunterParams) -> SQLExpression:
     # Both INNER JOINs are 8-byte hash probes — minimal overhead.
     parts.append(f"  FROM `{params.candidates_table}` c")
     parts.append(
-        f"  INNER JOIN `{params.source_table}` l "
+        f"  INNER JOIN `{params.eff_left_source}` l "
         f"ON c.{LEFT_ENTITY_UID} = l.{ENTITY_UID}"
     )
     parts.append(
-        f"  INNER JOIN `{params.source_table}` r "
+        f"  INNER JOIN `{params.eff_right_source}` r "
         f"ON c.{RIGHT_ENTITY_UID} = r.{ENTITY_UID}"
     )
 

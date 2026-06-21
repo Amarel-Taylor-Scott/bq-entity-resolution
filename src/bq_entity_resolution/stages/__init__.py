@@ -23,6 +23,7 @@ from bq_entity_resolution.stages.clustering import ClusteringStage
 from bq_entity_resolution.stages.features import FeatureEngineeringStage, TermFrequencyStage
 from bq_entity_resolution.stages.gold_output import GoldOutputStage
 from bq_entity_resolution.stages.label_ingestion import LabelIngestionStage
+from bq_entity_resolution.stages.leaf_resolution import LeafResolutionStage
 from bq_entity_resolution.stages.match_accumulation import MatchAccumulationStage
 from bq_entity_resolution.stages.matching import MatchingStage
 from bq_entity_resolution.stages.placeholder_detection import PlaceholderDetectionStage
@@ -38,6 +39,7 @@ __all__ = [
     "BlockingStage",
     "MatchingStage",
     "MatchAccumulationStage",
+    "LeafResolutionStage",
     "ClusteringStage",
     "CanonicalIndexInitStage",
     "CanonicalIndexPopulateStage",
