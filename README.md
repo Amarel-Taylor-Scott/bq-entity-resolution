@@ -26,7 +26,7 @@ The `old × old` repair leaf is the headline capability no single-pass tool offe
 
 ### Status — honest
 
-This is shipping in stages, presented exactly as far as it has landed:
+**Fully landed — every regime (new×new / new×old / old×old / N×M), tested.** Each piece, with its artifact:
 
 - **Design** — full design doc: [`docs/leaf-resolution-design.md`](docs/leaf-resolution-design.md) (abstraction, SQL shape, executor flow, heuristics catalogue, migration, test plan, phasing).
 - **Working prototype** — [`examples/leaf_prototype.py`](examples/leaf_prototype.py), a standalone DuckDB script (no BigQuery needed) that runs `new×new` / `new×old` / `old×old` end to end and demonstrates the `old×old` repair leaf merging two canonicals that a single-pass pipeline leaves permanently split:
@@ -55,6 +55,14 @@ This is shipping in stages, presented exactly as far as it has landed:
   ```
 
   End-to-end coverage on the DuckDB backend lives in [`tests/integration/test_leaf_resolution_e2e.py`](tests/integration/test_leaf_resolution_e2e.py).
+
+- **Scheduling & CLI (landed)** — `LeafDef.schedule` (`every_run`/`manual`/`cron`) + a dependency-free cron evaluator ([`scheduling.py`](src/bq_entity_resolution/scheduling.py)); `bq-er run --repair`, `bq-er run --leaf NAME`, `bq-er preview-sql --leaf NAME`. So the `old×old` repair leaf actually runs on its own cadence.
+- **Repair watermark / `touched_only` (landed)** — [`sql/builders/leaf_repair.py`](src/bq_entity_resolution/sql/builders/leaf_repair.py): `old×old` only re-compares canonicals changed since the last repair, so re-resolution stays affordable.
+- **Modular scoring (landed)** — `LeafDef.scoring` routes each leaf to the production `sum`/`fellegi_sunter` engine (soft signals, hard negatives, banding, TF) instead of a bespoke scorer; cross-partition leaves bind `featured × canonical_index` as left/right sources.
+- **Entity-level `new×old` (landed)** — [`sql/builders/leaf_entity.py`](src/bq_entity_resolution/sql/builders/leaf_entity.py) compares new records against canonical *entities* (one consensus row per cluster), not every historical record.
+- **`old×old` merge-repair persistence (landed)** — re-clustered existing canonicals are written back to the canonical index ([`build_repair_cluster_update_sql`](src/bq_entity_resolution/sql/builders/clustering/incremental.py)), proven end-to-end in [`tests/integration/test_old_x_old_merge_repair.py`](tests/integration/test_old_x_old_merge_repair.py).
+- **Per-leaf metrics (landed)** — candidate pairs + reduction ratio per leaf ([`sql/builders/leaf_metrics.py`](src/bq_entity_resolution/sql/builders/leaf_metrics.py)).
+- **Example config** — [`config/examples/leaves_resolution.yml`](config/examples/leaves_resolution.yml) wires all three regimes with realistic heuristics.
 
 ## Why This Tool?
 

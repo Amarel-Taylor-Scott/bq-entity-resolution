@@ -1,7 +1,9 @@
 # Leaf-Based Resolution — Design
 
-> Status: **proposed** · Audience: maintainers · Supersedes the implicit
-> intra-batch / cross-batch split in `sql/builders/blocking.py`.
+> Status: **implemented** (Phases 1-6 shipped) · Audience: maintainers ·
+> Supersedes the implicit intra-batch / cross-batch split in
+> `sql/builders/blocking.py`. Example config:
+> [`config/examples/leaves_resolution.yml`](../config/examples/leaves_resolution.yml).
 
 ## 1. Motivation
 
@@ -201,6 +203,13 @@ reduction ratio, precision) extend the existing blocking metrics.
   space disjointly with identical blocking/matching (no double counting).
 
 ## 9. Phasing
+
+> **All phases shipped.** Scheduling/CLI (`--repair`, `--leaf`,
+> `preview-sql --leaf`), `touched_only` repair watermark, modular sum/Fellegi-Sunter
+> scoring, entity-level new×old consensus, old×old merge-repair persistence, and
+> per-leaf metrics are implemented and tested (see `tests/**/test_leaf_*`,
+> `test_old_x_old_merge_repair.py`). Remaining match-quality work tracked in
+> [`score-opportunities.md`](score-opportunities.md).
 
 1. **Prototype (DuckDB, standalone)** — prove new×new / new×old / old×old / NxM end
    to end on sample data. *(this PR's companion)*

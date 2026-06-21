@@ -1,0 +1,226 @@
+# Leaf-based resolution example — new×new / new×old / old×old.
+# Each leaf is an independently-configured comparison stratum with
+# its own scoring, heuristics, and schedule. The old×old repair leaf
+# (run via `bq-er run --repair`) re-resolves entities a single pass
+# left split — see docs/leaf-resolution-design.md.
+project:
+  name: leaf_resolution_demo
+  bq_project: ${BQ_PROJECT}
+sources:
+- name: customers
+  table: ${BQ_PROJECT}.raw.customers
+  unique_key: customer_id
+  updated_at: updated_at
+  columns:
+  - name: first_name
+    role: first_name
+  - name: last_name
+    role: last_name
+  - name: email
+    role: email
+  - name: phone
+    role: phone
+feature_engineering:
+  name_features:
+    features:
+    - name: first_name_clean
+      function: name_clean
+      inputs:
+      - first_name
+    - name: first_name_soundex
+      function: soundex
+      inputs:
+      - first_name
+    - name: first_name_metaphone
+      function: metaphone
+      inputs:
+      - first_name
+    - name: last_name_clean
+      function: name_clean
+      inputs:
+      - last_name
+    - name: last_name_soundex
+      function: soundex
+      inputs:
+      - last_name
+    - name: last_name_metaphone
+      function: metaphone
+      inputs:
+      - last_name
+    - name: email_domain
+      function: email_domain
+      inputs:
+      - email
+    - name: email_local
+      function: email_local_part
+      inputs:
+      - email
+    - name: email_clean
+      function: lower_trim
+      inputs:
+      - email
+    - name: phone_std
+      function: phone_standardize
+      inputs:
+      - phone
+    - name: phone_last4
+      function: phone_last_four
+      inputs:
+      - phone
+  blocking_keys:
+  - name: bk_first_soundex
+    function: soundex
+    inputs:
+    - first_name
+  - name: bk_last_soundex
+    function: soundex
+    inputs:
+    - last_name
+  - name: bk_email_domain
+    function: email_domain
+    inputs:
+    - email
+  - name: bk_phone_last4
+    function: phone_last_four
+    inputs:
+    - phone
+comparison_pool:
+  first_name_jw:
+    left: first_name_clean
+    right: first_name_clean
+    method: jaro_winkler
+    weight: 2.0
+  first_name_exact:
+    left: first_name_clean
+    right: first_name_clean
+    method: exact
+    weight: 3.0
+  last_name_jw:
+    left: last_name_clean
+    right: last_name_clean
+    method: jaro_winkler
+    weight: 2.0
+  last_name_exact:
+    left: last_name_clean
+    right: last_name_clean
+    method: exact
+    weight: 3.0
+  email_exact:
+    left: email_clean
+    right: email_clean
+    method: exact
+    weight: 5.0
+  email_domain_match:
+    left: email_domain
+    right: email_domain
+    method: exact
+    weight: 0.5
+  phone_exact:
+    left: phone_std
+    right: phone_std
+    method: exact
+    weight: 4.0
+matching_tiers:
+- name: exact
+  description: High-confidence exact matches
+  blocking:
+    paths:
+    - keys:
+      - bk_first_soundex
+      - bk_last_soundex
+  comparisons:
+  - left: first_name_clean
+    right: first_name_clean
+    method: jaro_winkler
+    weight: 2.0
+  - left: first_name_clean
+    right: first_name_clean
+    method: exact
+    weight: 3.0
+  - left: last_name_clean
+    right: last_name_clean
+    method: jaro_winkler
+    weight: 2.0
+  - left: last_name_clean
+    right: last_name_clean
+    method: exact
+    weight: 3.0
+  - left: email_clean
+    right: email_clean
+    method: exact
+    weight: 5.0
+  - left: email_domain
+    right: email_domain
+    method: exact
+    weight: 0.5
+  - left: phone_std
+    right: phone_std
+    method: exact
+    weight: 4.0
+  threshold:
+    min_score: 13.649999999999999
+- name: fuzzy
+  description: Fuzzy probabilistic matches
+  blocking:
+    paths:
+    - keys:
+      - bk_email_domain
+      - bk_phone_last4
+  comparisons:
+  - left: first_name_clean
+    right: first_name_clean
+    method: jaro_winkler
+    weight: 2.0
+  - left: first_name_clean
+    right: first_name_clean
+    method: exact
+    weight: 3.0
+  - left: last_name_clean
+    right: last_name_clean
+    method: jaro_winkler
+    weight: 2.0
+  - left: last_name_clean
+    right: last_name_clean
+    method: exact
+    weight: 3.0
+  - left: email_clean
+    right: email_clean
+    method: exact
+    weight: 5.0
+  - left: email_domain
+    right: email_domain
+    method: exact
+    weight: 0.5
+  - left: phone_std
+    right: phone_std
+    method: exact
+    weight: 4.0
+  threshold:
+    min_score: 7.800000000000001
+partitions:
+- name: new
+- name: old
+  source: canonical
+leaves:
+- name: new_x_new
+  left: new
+  right: new
+  scoring: sum
+- name: new_x_old
+  left: new
+  right: old
+  scoring: sum
+  heuristics:
+    exact_key_short_circuit:
+    - email_clean
+    entity_level: true
+- name: old_x_old
+  left: old
+  right: old
+  scoring: sum
+  heuristics:
+    threshold_override: 0.97
+    touched_only: true
+    max_pairs: 5000000
+  schedule: cron
+  cron: 0 3 * * 0
