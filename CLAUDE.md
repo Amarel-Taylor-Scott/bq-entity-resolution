@@ -301,7 +301,9 @@ spec:
           configMap:
             name: er-pipeline-config
       restartPolicy: Never
-  backoffLimit: 2   # Retry on failure (checkpoint/resume handles idempotency)
+  backoffLimit: 2   # Safe to retry: stages are idempotent (CREATE OR REPLACE).
+                    # NOTE: a retried pod re-runs the whole pipeline from the
+                    # start unless scale.checkpoint_enabled: true (off by default).
 ```
 
 ### Argo Workflows
@@ -485,6 +487,10 @@ See `docs/incremental_processing.md` for full guide and `config/examples/increme
 - PII redaction in SQL audit logs (implemented in executor via `_redact_sql()`; runtime logs not yet covered)
 - Distributed locking for concurrent runs (implemented in `pipeline/lock.py`)
 - Audit trail is optional (should be mandatory for regulated industries)
+- `--resume` only skips stages when `scale.checkpoint_enabled: true` (off by default); otherwise the whole pipeline re-runs (safe — stages are idempotent via CREATE OR REPLACE — but nothing is skipped). The CLI now warns when `--resume` has no effect.
+- `DataQualityScoreGate` is a **marker** gate: it always passes (full score computation isn't wired yet) even when `monitoring.min_data_quality_score` is set.
+- `incremental.full_refresh_on_schema_change` is **not yet enforced** (no read sites); trigger a full refresh manually with `--full-refresh` on schema drift.
+- `fq_table()` has no per-pipeline component, so two default-config pipelines in one BigQuery project write to the same tables — give each pipeline its own datasets (or distinct project) to isolate.
 
 See `docs/TUNING.md` for output schema reference and common tuning remediation steps.
 

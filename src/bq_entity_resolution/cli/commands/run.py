@@ -144,6 +144,15 @@ def run(
                         f".pipeline_checkpoints"
                     )
                     checkpoint_manager = CheckpointManager(bq_client, checkpoint_table)
+                elif resume:
+                    click.echo(
+                        "WARNING: --resume has no effect because "
+                        "scale.checkpoint_enabled is false — the whole pipeline "
+                        "re-runs from the start. Re-running is safe (stages are "
+                        "idempotent: CREATE OR REPLACE), but no stages are skipped. "
+                        "Set scale.checkpoint_enabled: true to actually resume.",
+                        err=True,
+                    )
 
                 result = pipeline.run(
                     backend=backend,

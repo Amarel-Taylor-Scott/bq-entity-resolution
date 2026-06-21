@@ -264,6 +264,9 @@ class IncrementalConfig(BaseModel):
     partition_cursors: list[PartitionCursorConfig] = Field(default_factory=list)
     hash_cursor: HashCursorConfig | None = None
     batch_size: int = 2_000_000
+    # EXPERIMENTAL / not yet enforced: no read sites wire automatic
+    # schema-change detection yet. Triggering a full refresh on schema drift is
+    # still a manual step (`bq-er run --full-refresh`). Kept for forward-compat.
     full_refresh_on_schema_change: bool = True
     drain_mode: bool = False
     drain_max_iterations: int = 100

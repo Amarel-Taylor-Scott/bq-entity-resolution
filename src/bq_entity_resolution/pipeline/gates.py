@@ -211,8 +211,9 @@ class DataQualityScoreGate(DataQualityGate):
         return GateResult(
             passed=True,
             message=(
-                f"Data quality score gate active (min={self._min_score},"
-                f" stage={stage_name})"
+                f"Data quality score gate is a MARKER — score is not yet "
+                f"enforced (min={self._min_score}, stage={stage_name}); always "
+                f"passes until full computation is wired"
             ),
         )
 
