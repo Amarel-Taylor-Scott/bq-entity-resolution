@@ -20,6 +20,7 @@ from typing import Any
 
 from bq_entity_resolution.columns import (
     LEFT_ENTITY_UID,
+    MATCH_BAND,
     MATCH_CONFIDENCE,
     MATCH_LEAF,
     MATCH_METHOD,
@@ -482,8 +483,8 @@ class LeafResolutionStage(Stage):
             return []
 
         exprs: list[SQLExpression] = []
-        # (leaf_name, leaf_pairs_table, has_method_column)
-        leaf_specs: list[tuple[str, str, bool]] = []
+        # (leaf_name, leaf_pairs_table, has_method_column, has_band_column)
+        leaf_specs: list[tuple[str, str, bool, bool]] = []
         metric_inputs: list[LeafMetricInput] = []
         emitted_repair_leaves: list[str] = []
         repair_table = leaf_repair_watermarks_table(self._config)
@@ -499,8 +500,16 @@ class LeafResolutionStage(Stage):
                 continue
             exprs.extend(leaf_exprs)
             # The greatest scorer's table carries a match_method column (e.g.
-            # 'short_circuit'); the sum/F-S matches table does not.
-            leaf_specs.append((leaf.name, target, leaf.scoring == "greatest"))
+            # 'short_circuit'); the sum/F-S matches table does not. A match_band
+            # column exists only for sum/F-S leaves whose tier enables banding.
+            is_greatest = leaf.scoring == "greatest"
+            has_band = False
+            if not is_greatest:
+                tier = self._resolve_scoring_tier(leaf)
+                has_band = bool(
+                    tier and tier.score_banding.enabled and tier.score_banding.bands
+                )
+            leaf_specs.append((leaf.name, target, is_greatest, has_band))
             if left_src and right_src:
                 metric_inputs.append(
                     LeafMetricInput(
@@ -529,7 +538,7 @@ class LeafResolutionStage(Stage):
         return exprs
 
     def _build_union_sql(
-        self, leaf_specs: list[tuple[str, str, bool]]
+        self, leaf_specs: list[tuple[str, str, bool, bool]]
     ) -> SQLExpression:
         """UNION ALL every leaf's pairs into the all_matches table.
 
@@ -548,17 +557,20 @@ class LeafResolutionStage(Stage):
         """
         target = all_matches_table(self._config)
         selects = []
-        for name, tbl, has_method in leaf_specs:
+        for name, tbl, has_method, has_band in leaf_specs:
             leaf_lit = sql_escape(name)
             # has_method == greatest scorer: a match_method column but no
             # calibrated match_confidence; sum/F-S has confidence but no method.
+            # match_band exists only on sum/F-S leaves whose tier enables banding.
             method_col = MATCH_METHOD if has_method else "'compare'"
             conf_col = "NULL" if has_method else MATCH_CONFIDENCE
+            band_col = MATCH_BAND if has_band else "NULL"
             selects.append(
                 f"SELECT {LEFT_ENTITY_UID}, {RIGHT_ENTITY_UID}, "
                 f"{MATCH_TOTAL_SCORE}, '{leaf_lit}' AS {MATCH_LEAF}, "
                 f"{method_col} AS {MATCH_METHOD}, "
-                f"{conf_col} AS {MATCH_CONFIDENCE} "
+                f"{conf_col} AS {MATCH_CONFIDENCE}, "
+                f"{band_col} AS {MATCH_BAND} "
                 f"FROM `{tbl}`"
             )
         union = "\n  UNION ALL\n  ".join(selects)
@@ -571,7 +583,9 @@ class LeafResolutionStage(Stage):
             f"  ANY_VALUE({MATCH_LEAF}) AS {MATCH_LEAF},\n"
             f"  ANY_VALUE({MATCH_LEAF}) AS match_tier_name,\n"
             f"  MAX({MATCH_METHOD}) AS {MATCH_METHOD},\n"
-            f"  MAX({MATCH_CONFIDENCE}) AS {MATCH_CONFIDENCE}\n"
+            f"  MAX({MATCH_CONFIDENCE}) AS {MATCH_CONFIDENCE},\n"
+            # MAX skips NULLs → keeps a real band when any leaf supplied one.
+            f"  MAX({MATCH_BAND}) AS {MATCH_BAND}\n"
             f"FROM (\n  {union}\n)\n"
             f"GROUP BY {LEFT_ENTITY_UID}, {RIGHT_ENTITY_UID}"
         )

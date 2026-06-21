@@ -37,6 +37,26 @@ def test_union_shape(cfg):
     assert "MAX(match_confidence) AS match_confidence" in u  # aggregated out
 
 
+def test_union_band_carry(cfg):
+    from bq_entity_resolution.config.models.matching import (
+        ScoreBandDef,
+        ScoreBandingConfig,
+    )
+
+    # Without banding, no leaf has a match_band column → NULL everywhere.
+    assert "NULL AS match_band" in _union_sql(cfg)
+    assert "match_band AS match_band" not in _union_sql(cfg)
+
+    # Enable banding on the resolved tier → the sum leaf carries match_band.
+    for t in cfg.matching_tiers:
+        t.score_banding = ScoreBandingConfig(
+            enabled=True, bands=[ScoreBandDef(name="HIGH", min_score=5.0)]
+        )
+    u = _union_sql(cfg)
+    assert "match_band AS match_band" in u            # sum leaf: carried
+    assert "MAX(match_band) AS match_band" in u       # aggregated (skips NULLs)
+
+
 def test_union_executes_on_duckdb(cfg):
     from bq_entity_resolution.backends.duckdb import DuckDBBackend
     from bq_entity_resolution.backends.duckdb.sql_adapter import adapt_sql
