@@ -35,10 +35,11 @@ pip install "bq-entity-resolution[local]"
 
 ### Production (BigQuery)
 
-For production workloads against BigQuery:
+For production workloads against BigQuery (install from source until the PyPI
+release is published):
 
 ```bash
-pip install bq-entity-resolution
+pip install -e .
 ```
 
 You will also need to authenticate with Google Cloud:

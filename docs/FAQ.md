@@ -39,7 +39,7 @@ Key differentiators of bq-entity-resolution:
 | Config format | YAML (config-driven) | Python API | Python API |
 | SQL preview | Yes (`preview-sql`) | Partial | No |
 | Incremental processing | Yes (composite watermarks, drain mode) | Limited | No |
-| Scale ceiling | 15B+ records (tested) | Depends on backend | ~1M records |
+| Scale ceiling | 15B+ records (designed for) | Depends on backend | ~1M records |
 | Checkpoint/resume | Yes | No | No |
 | Local testing | DuckDB backend | DuckDB backend | Native |
 
@@ -343,7 +343,7 @@ Higher values are more conservative (fewer but higher-quality matches). Start ar
 
 ### How many records can this handle?
 
-The pipeline has been tested with datasets exceeding 15 billion records using incremental processing. Guidelines by scale:
+The pipeline is architected for datasets exceeding 15 billion records using incremental processing (composite watermarks, drain mode, and cross-batch blocking against the canonical index). Guidelines by scale:
 
 | Records | Recommended Approach |
 |---------|---------------------|

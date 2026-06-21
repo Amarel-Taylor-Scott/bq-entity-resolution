@@ -8,8 +8,8 @@
 **bq-entity-resolution** is a config-driven entity resolution pipeline for BigQuery.
 Python generates SQL; BigQuery (or DuckDB locally) executes it. No data leaves the warehouse.
 
-- **3,894 tests passing, 24 skipped** (skips: BigQuery-emulator and DuckDB-unsupported BQ-function integration tests; see `pip install -e ".[dev,local]"` for the local backend deps) — 160+ source files, 25,000+ LOC
-- **v0.2.0** — published to PyPI as `bq-entity-resolution`
+- **3,960+ tests passing, 24 skipped** (skips: BigQuery-emulator and DuckDB-unsupported BQ-function integration tests; see `pip install -e ".[dev,local]"` for the local backend deps) — 175+ source files, 30,000+ LOC
+- **v0.2.0** — install from source; PyPI publish is release-gated (`.github/workflows/publish.yml`)
 - **Python 3.11+** with Pydantic v2, Click, structlog, sqlglot
 - **19 entity types**, 57 column roles, 16 domain presets, 20 example configs
 
@@ -17,7 +17,7 @@ Python generates SQL; BigQuery (or DuckDB locally) executes it. No data leaves t
 
 ```bash
 # Tests
-python -m pytest tests/ -v                    # 3894 passing, 24 skipped, ~60s
+python -m pytest tests/ -v                    # 3960+ passing, 24 skipped, ~90s
 C:/Users/amare/AppData/Local/Programs/Python/Python312/python.exe -m pytest tests/ -v  # Windows
 
 # Lint + Type Check
@@ -47,13 +47,12 @@ bq-er describe --config config.yml                  # Describe pipeline configur
 
 **Local development (no BigQuery needed):**
 ```bash
-pip install "bq-entity-resolution[local]"
-# Uses DuckDB backend — no credentials required
+pip install -e ".[local]"   # from source; uses DuckDB backend — no credentials required
 ```
 
 **BigQuery production:**
 ```bash
-pip install bq-entity-resolution
+pip install -e .   # from source (pre-release)
 
 # Option A: gcloud CLI auth (developer workstation)
 gcloud auth application-default login

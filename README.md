@@ -1,10 +1,10 @@
 # bq-entity-resolution
 
-[![PyPI version](https://img.shields.io/pypi/v/bq-entity-resolution.svg)](https://pypi.org/project/bq-entity-resolution/)
-[![Python](https://img.shields.io/pypi/pyversions/bq-entity-resolution.svg)](https://pypi.org/project/bq-entity-resolution/)
+[![version](https://img.shields.io/badge/version-0.2.0-blue.svg)](pyproject.toml)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![CI](https://github.com/your-org/bq-entity-resolution/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
-[![Tests](https://img.shields.io/badge/tests-3894%20passing%2C%2024%20skipped-brightgreen.svg)]()
+[![CI](https://github.com/Amarel-Taylor-Scott/bq-entity-resolution/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![Tests](https://img.shields.io/badge/tests-3960%2B%20passing%2C%2024%20skipped-brightgreen.svg)]()
 
 A configurable, multi-tier entity resolution pipeline for Google BigQuery. Python handles configuration and SQL generation; BigQuery executes all data processing. No data leaves the warehouse.
 
@@ -71,10 +71,12 @@ This is shipping in stages, presented exactly as far as it has landed:
 ## Install
 
 ```bash
-pip install bq-entity-resolution
+# From source (PyPI publish is release-gated via .github/workflows/publish.yml):
+git clone https://github.com/Amarel-Taylor-Scott/bq-entity-resolution.git
+cd bq-entity-resolution
 
 # With DuckDB for local testing (no BigQuery credentials needed):
-pip install "bq-entity-resolution[local]"
+pip install -e ".[local]"
 
 # For development:
 pip install -e ".[dev,local]"
@@ -500,7 +502,7 @@ pipeline.run(backend=DuckDBBackend())
 
 ```bash
 pip install -e ".[dev,local]"
-python -m pytest tests/ -q               # 3894 passing, 24 skipped, ~60s
+python -m pytest tests/ -q               # 3960+ passing, 24 skipped, ~90s
 python -m ruff check src/ tests/          # lint (matches CI)
 python -m mypy src/                       # type check
 ```
