@@ -7,6 +7,8 @@ all domain-specific configuration models into a single validated schema.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -304,18 +306,62 @@ class PipelineConfig(BaseModel):
             return list(self.leaves)
         return default_leaves(cross_batch=self._has_cross_batch_blocking())
 
-    def runnable_leaves(self) -> list[LeafDef]:
-        """Enabled, every-run leaves for this run.
+    def select_leaves(
+        self,
+        *,
+        repair: bool = False,
+        only: Sequence[str] | None = None,
+        now: datetime | None = None,
+        last_repair_at: Mapping[str, datetime] | None = None,
+    ) -> list[LeafDef]:
+        """Select the leaves to run for one invocation.
 
-        ``schedule="every_run"`` leaves run each pipeline invocation;
-        ``manual``/``cron`` leaves (e.g. ``old×old`` repair) are opt-in and
-        excluded here — the executor selects them explicitly.
+        Selection rules (a leaf must be ``enabled`` to be eligible):
+
+        - ``only`` given → run *exactly* those named leaves regardless of
+          schedule (targeted/preview runs via ``--leaf``). Order follows
+          ``effective_leaves()``.
+        - otherwise ``schedule="every_run"`` leaves always run;
+        - ``schedule="manual"`` leaves run only when ``repair=True``;
+        - ``schedule="cron"`` leaves run when ``repair=True`` *or* when a cron
+          firing is due since their last repair (``is_cron_due`` against
+          ``now``/``last_repair_at[name]``).
+
+        ``--repair`` therefore augments the normal every-run set with the
+        scheduled repair leaves (e.g. ``old×old``); it never drops the
+        every-run leaves.
         """
-        return [
-            leaf
-            for leaf in self.effective_leaves()
-            if leaf.enabled and leaf.schedule == "every_run"
-        ]
+        from bq_entity_resolution.scheduling import is_cron_due
+
+        eligible = [leaf for leaf in self.effective_leaves() if leaf.enabled]
+
+        if only:
+            wanted = set(only)
+            return [leaf for leaf in eligible if leaf.name in wanted]
+
+        last = last_repair_at or {}
+        selected: list[LeafDef] = []
+        for leaf in eligible:
+            if leaf.schedule == "every_run":
+                selected.append(leaf)
+            elif leaf.schedule == "manual":
+                if repair:
+                    selected.append(leaf)
+            elif leaf.schedule == "cron":
+                if repair or is_cron_due(
+                    leaf.cron, now=now, last_run=last.get(leaf.name)
+                ):
+                    selected.append(leaf)
+        return selected
+
+    def runnable_leaves(self) -> list[LeafDef]:
+        """Enabled, every-run leaves for the default (non-repair) invocation.
+
+        Thin wrapper over :meth:`select_leaves` with no repair flag and no
+        explicit selection — ``manual``/``cron`` leaves (e.g. ``old×old``
+        repair) are excluded; the executor opts into them via ``select_leaves``.
+        """
+        return self.select_leaves()
 
     def effective_hard_negatives(self, tier: MatchingTierConfig) -> list[HardNegativeDef]:
         """Return combined global + tier-level hard negatives for a tier.

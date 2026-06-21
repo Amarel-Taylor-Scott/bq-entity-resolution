@@ -44,6 +44,28 @@ def leaf_pairs_table(config: PipelineConfig, leaf_name: str) -> str:
     return config.fq_table("bq_dataset_silver", f"leaf_pairs_{leaf_name}")
 
 
+def leaf_candidates_table(config: PipelineConfig, leaf_name: str) -> str:
+    """Silver layer blocking-only candidate table for a leaf.
+
+    Feeds the production sum / Fellegi-Sunter scorer when a leaf uses
+    ``scoring: sum|fellegi_sunter`` (blocking is decoupled from scoring).
+    """
+    return config.fq_table("bq_dataset_silver", f"leaf_candidates_{leaf_name}")
+
+
+def leaf_canonical_agg_table(config: PipelineConfig, leaf_name: str) -> str:
+    """Silver layer consensus (one-row-per-cluster) canonical aggregate for a
+    leaf using ``heuristics.entity_level`` (compare new records against canonical
+    entities rather than every historical record)."""
+    return config.fq_table("bq_dataset_silver", f"leaf_canonical_agg_{leaf_name}")
+
+
+def leaf_metrics_table(config: PipelineConfig) -> str:
+    """Silver layer per-leaf effectiveness metrics (candidate pairs, reduction
+    ratio) keyed by leaf name."""
+    return config.fq_table("bq_dataset_silver", "leaf_metrics")
+
+
 def cluster_table(config: PipelineConfig) -> str:
     """Silver layer entity cluster assignments."""
     return config.fq_table("bq_dataset_silver", "entity_clusters")
@@ -117,3 +139,14 @@ def placeholder_detection_table(config: PipelineConfig) -> str:
     """Meta layer placeholder detection log table."""
     p = config.project
     return f"{p.bq_project}.{p.watermark_dataset}.placeholder_detection_log"
+
+
+def leaf_repair_watermarks_table(config: PipelineConfig) -> str:
+    """Meta layer per-leaf repair watermark table.
+
+    Records the last time each scheduled/repair leaf (e.g. ``old×old``) ran, so
+    ``touched_only`` can restrict re-comparison to entities changed since then
+    and cron-scheduled leaves can tell whether a firing is due.
+    """
+    p = config.project
+    return f"{p.bq_project}.{p.watermark_dataset}.leaf_repair_watermarks"

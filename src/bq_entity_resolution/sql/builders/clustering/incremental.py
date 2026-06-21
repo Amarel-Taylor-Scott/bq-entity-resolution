@@ -186,16 +186,51 @@ def build_canonical_index_init_sql(
     return SQLExpression.from_raw("\n".join(lines))
 
 
+def build_repair_cluster_update_sql(
+    canonical_table: str, cluster_table: str
+) -> SQLExpression:
+    """Persist cluster reassignments for **all** existing canonical entities.
+
+    The MERGE in :func:`build_populate_canonical_index_sql` only sources from
+    the current batch (``featured``), so it never writes back cluster changes
+    for entities that aren't in this batch. An ``old×old`` repair re-clusters
+    *existing* canonicals (not in the batch); without this broad update the
+    merge is computed in ``entity_clusters`` but lost. This restores the
+    documented UPDATE-from-clusters step (see ``docs/incremental_processing.md``).
+    """
+    validate_table_ref(canonical_table)
+    validate_table_ref(cluster_table)
+    sql = (
+        f"UPDATE `{canonical_table}` ci\n"
+        f"SET {CLUSTER_ID} = cl.{CLUSTER_ID}\n"
+        f"FROM `{cluster_table}` cl\n"
+        f"WHERE ci.{ENTITY_UID} = cl.{ENTITY_UID}\n"
+        f"  AND ci.{CLUSTER_ID} != cl.{CLUSTER_ID};"
+    )
+    return SQLExpression.from_raw(sql)
+
+
 def build_populate_canonical_index_sql(
     params: PopulateCanonicalIndexParams,
 ) -> SQLExpression:
-    """Build SQL to upsert current batch entities into canonical_index.
+    """Persist clustering results into the canonical index.
 
-    Uses MERGE for atomicity — a crash between UPDATE and INSERT in the
-    old pattern could lose new entities.
+    Two steps:
+
+    1. **Broad update** — write back changed ``cluster_id`` for *every* existing
+       canonical entity (covers ``old×old`` merge-repair of entities not in the
+       current batch — the MERGE alone would miss them).
+    2. **MERGE** — upsert the current batch: update batch entities whose cluster
+       changed and insert genuinely new entities (``INSERT ROW``).
+
+    The watermark only advances after a successful run, so a crash between the
+    two steps is recovered by re-running (clustering re-derives the assignments).
     """
-    sql = (
-        f"-- Atomic upsert: update existing + insert new in one MERGE\n"
+    update_existing = build_repair_cluster_update_sql(
+        params.canonical_table, params.cluster_table
+    ).render()
+    merge_new = (
+        f"-- Upsert the current batch: update changed + insert new\n"
         f"MERGE INTO `{params.canonical_table}` ci\n"
         f"USING (\n"
         f"  SELECT f.*, cl.{CLUSTER_ID}\n"
@@ -208,6 +243,11 @@ def build_populate_canonical_index_sql(
         f"WHEN NOT MATCHED THEN\n"
         f"  INSERT ROW;"
     )
+    sql = (
+        f"-- Step 1: persist cluster reassignments for all existing canonicals\n"
+        f"{update_existing}\n\n"
+        f"-- Step 2: {merge_new}"
+    )
     return SQLExpression.from_raw(sql)
 
 
@@ -216,6 +256,7 @@ __all__ = [
     "CanonicalIndexInitParams",
     "IncrementalClusteringParams",
     "PopulateCanonicalIndexParams",
+    "build_repair_cluster_update_sql",
     "build_canonical_index_init_sql",
     "build_incremental_cluster_sql",
     "build_populate_canonical_index_sql",

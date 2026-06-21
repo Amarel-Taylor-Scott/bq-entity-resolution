@@ -128,11 +128,11 @@ def build_sum_scoring_sql(params: SumScoringParams) -> SQLExpression:
     # so BQ can co-locate the left and right lookups in storage.
     parts.append(f"  FROM `{params.candidates_table}` c")
     parts.append(
-        f"  INNER JOIN `{params.source_table}` l "
+        f"  INNER JOIN `{params.eff_left_source}` l "
         f"ON c.{LEFT_ENTITY_UID} = l.{ENTITY_UID}"
     )
     parts.append(
-        f"  INNER JOIN `{params.source_table}` r "
+        f"  INNER JOIN `{params.eff_right_source}` r "
         f"ON c.{RIGHT_ENTITY_UID} = r.{ENTITY_UID}"
     )
 

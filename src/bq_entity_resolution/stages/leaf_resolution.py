@@ -35,16 +35,31 @@ from bq_entity_resolution.naming import (
     all_matches_table,
     canonical_index_table,
     featured_table,
+    leaf_canonical_agg_table,
+    leaf_candidates_table,
+    leaf_metrics_table,
     leaf_pairs_table,
+    leaf_repair_watermarks_table,
 )
 from bq_entity_resolution.sql.builders.leaf import (
     LeafBlockingPath,
     LeafScoreTerm,
     LeafSQLParams,
+    build_leaf_candidates_sql,
     build_leaf_sql,
 )
+from bq_entity_resolution.sql.builders.leaf_entity import build_canonical_aggregate_sql
+from bq_entity_resolution.sql.builders.leaf_metrics import (
+    LeafMetricInput,
+    build_leaf_metrics_sql,
+)
+from bq_entity_resolution.sql.builders.leaf_repair import (
+    build_advance_repair_watermark_sql,
+    build_repair_watermark_ddl,
+    repair_watermark_floor,
+)
 from bq_entity_resolution.sql.expression import SQLExpression
-from bq_entity_resolution.sql.utils import validate_table_ref
+from bq_entity_resolution.sql.utils import sql_escape, validate_table_ref
 from bq_entity_resolution.stages.base import Stage, TableRef
 
 logger = logging.getLogger(__name__)
@@ -180,9 +195,16 @@ class LeafResolutionStage(Stage):
     ``all_matches`` table (tagged by ``match_leaf``) that clustering consumes.
     """
 
-    def __init__(self, config: PipelineConfig):
+    def __init__(
+        self,
+        config: PipelineConfig,
+        leaves: list[LeafDef] | None = None,
+    ):
         self._config = config
-        self._leaves = config.runnable_leaves()
+        # ``leaves`` lets the DAG pass an explicit selection (e.g. a ``--repair``
+        # or ``--leaf`` run that includes scheduled ``old×old`` leaves). When
+        # omitted, fall back to the default every-run selection.
+        self._leaves = leaves if leaves is not None else config.runnable_leaves()
 
     @property
     def name(self) -> str:
@@ -223,71 +245,313 @@ class LeafResolutionStage(Stage):
                 return part.source
         return "batch"
 
-    def plan(self, **kwargs: Any) -> list[SQLExpression]:
-        """Generate per-leaf candidate-pair SQL + the union into all_matches."""
-        if not self._leaves:
-            return []
+    @staticmethod
+    def _is_repair_leaf(leaf: LeafDef) -> bool:
+        """A leaf whose cadence we record in the repair watermark.
 
-        exprs: list[SQLExpression] = []
-        leaf_tables: list[str] = []
+        Any scheduled (``manual``/``cron``) leaf, and any ``touched_only`` leaf
+        (which must advance its watermark each run so "touched since last repair"
+        is well-defined).
+        """
+        return leaf.schedule != "every_run" or leaf.heuristics.touched_only
 
-        for leaf in self._leaves:
-            score_terms = _collect_score_terms(self._config, leaf)
-            blocking_paths = _collect_blocking_paths(self._config, leaf)
-            if not score_terms or not blocking_paths:
-                logger.warning(
-                    "Leaf '%s' has no usable %s — skipping",
-                    leaf.name,
-                    "comparisons" if not score_terms else "blocking paths",
+    @staticmethod
+    def _combine_predicates(a: str | None, b: str | None) -> str | None:
+        if a and b:
+            return f"({a}) AND ({b})"
+        return a or b
+
+    def _touched_predicates(
+        self, leaf: LeafDef, repair_table: str
+    ) -> tuple[str | None, str | None, str | None]:
+        """Compile ``touched_only`` into (extra_pair, left, right) predicates.
+
+        Returns the predicates to AND onto, respectively, the join (self-join:
+        "at least one endpoint changed since last repair") or the canonical
+        side's partition CTE (cross-partition: restrict the old side). All-None
+        when ``touched_only`` is off or no canonical side exists.
+        """
+        if not leaf.heuristics.touched_only:
+            return None, None, None
+        col = leaf.heuristics.touched_column
+        floor = repair_watermark_floor(repair_table, leaf.name)
+        if leaf.is_self_join:
+            return f"l.{col} > {floor} OR r.{col} > {floor}", None, None
+        if self._partition_source(leaf.right) == "canonical":
+            return None, None, f"{col} > {floor}"
+        if self._partition_source(leaf.left) == "canonical":
+            return None, f"{col} > {floor}", None
+        logger.warning(
+            "Leaf '%s': touched_only set but neither side is canonical — ignoring",
+            leaf.name,
+        )
+        return None, None, None
+
+    def _tier_index(self, tier: Any) -> int:
+        for i, t in enumerate(self._config.matching_tiers):
+            if t.name == tier.name:
+                return i
+        return 0
+
+    def _entity_level_columns(
+        self, leaf: LeafDef, blocking_paths: list[LeafBlockingPath]
+    ) -> list[str]:
+        """Columns the consensus aggregate must carry for a leaf.
+
+        Union of the leaf's blocking keys, the comparison columns of the tiers
+        it uses, its short-circuit keys, and (if scoped) the touched column.
+        """
+        cols: set[str] = set()
+        for path in blocking_paths:
+            cols.update(path.keys)
+        if leaf.matching_tiers is not None:
+            wanted = set(leaf.matching_tiers)
+            tiers = [t for t in self._config.enabled_tiers() if t.name in wanted]
+        else:
+            tiers = self._config.enabled_tiers()
+        for tier in tiers:
+            for comp in tier.comparisons:
+                cols.add(comp.left)
+                if comp.right:
+                    cols.add(comp.right)
+        cols.update(leaf.heuristics.exact_key_short_circuit)
+        if leaf.heuristics.touched_only:
+            cols.add(leaf.heuristics.touched_column)
+        return sorted(cols)
+
+    def _resolve_scoring_tier(self, leaf: LeafDef) -> Any | None:
+        """Pick the tier whose scoring config a sum/F-S leaf reuses.
+
+        Candidates are the leaf's named ``matching_tiers`` (else all enabled
+        tiers). Prefer one whose ``threshold.method`` matches the leaf's
+        ``scoring``; otherwise the first candidate.
+        """
+        tiers = self._config.enabled_tiers()
+        if leaf.matching_tiers:
+            wanted = set(leaf.matching_tiers)
+            named = [t for t in tiers if t.name in wanted]
+            tiers = named or tiers
+        if not tiers:
+            return None
+        for t in tiers:
+            if t.threshold.method == leaf.scoring:
+                return t
+        return tiers[0]
+
+    def _plan_one_leaf(
+        self, leaf: LeafDef, repair_table: str
+    ) -> tuple[list[SQLExpression], str | None, str | None, str | None]:
+        """Build one leaf's SQL.
+
+        Returns (statements, leaf_pairs_table, left_source, right_source); the
+        last three are None when the leaf is skipped. The source tables are the
+        *resolved* ones the leaf actually compared (e.g. the consensus aggregate
+        for an entity-level leaf), so per-leaf metrics are accurate.
+        """
+        blocking_paths = _collect_blocking_paths(self._config, leaf)
+        if not blocking_paths:
+            logger.warning("Leaf '%s' has no usable blocking paths — skipping", leaf.name)
+            return [], None, None, None
+
+        extra_pred, touched_left, touched_right = self._touched_predicates(
+            leaf, repair_table
+        )
+        left_table = _partition_table(self._config, leaf.left)
+        right_table = _partition_table(self._config, leaf.right)
+        left_pred = self._combine_predicates(
+            _partition_predicate(self._config, leaf.left), touched_left
+        )
+        right_pred = self._combine_predicates(
+            _partition_predicate(self._config, leaf.right), touched_right
+        )
+        target = leaf_pairs_table(self._config, leaf.name)
+
+        # Entity-level: collapse the canonical side(s) to one consensus row per
+        # cluster, so the leaf compares against canonical *entities* not records.
+        pre_exprs: list[SQLExpression] = []
+        if leaf.heuristics.entity_level:
+            left_canon = self._partition_source(leaf.left) == "canonical"
+            right_canon = self._partition_source(leaf.right) == "canonical"
+            if left_canon or right_canon:
+                agg_table = leaf_canonical_agg_table(self._config, leaf.name)
+                pre_exprs.append(
+                    build_canonical_aggregate_sql(
+                        target=agg_table,
+                        source=canonical_index_table(self._config),
+                        value_columns=self._entity_level_columns(leaf, blocking_paths),
+                    )
                 )
-                continue
+                if right_canon:
+                    right_table = agg_table
+                if left_canon:
+                    left_table = agg_table
+            else:
+                logger.warning(
+                    "Leaf '%s': entity_level set but neither side is canonical "
+                    "— ignoring",
+                    leaf.name,
+                )
 
-            target = leaf_pairs_table(self._config, leaf.name)
+        if leaf.scoring == "greatest":
+            score_terms = _collect_score_terms(self._config, leaf)
+            if not score_terms:
+                logger.warning(
+                    "Leaf '%s' (greatest) has no usable comparisons — skipping",
+                    leaf.name,
+                )
+                return [], None, None, None
             params = LeafSQLParams(
                 target_table=target,
                 leaf_name=leaf.name,
-                left_table=_partition_table(self._config, leaf.left),
-                right_table=_partition_table(self._config, leaf.right),
+                left_table=left_table,
+                right_table=right_table,
                 blocking_paths=blocking_paths,
                 score_terms=score_terms,
                 threshold=_leaf_threshold(self._config, leaf),
-                left_predicate=_partition_predicate(self._config, leaf.left),
-                right_predicate=_partition_predicate(self._config, leaf.right),
+                left_predicate=left_pred,
+                right_predicate=right_pred,
                 is_self_join=leaf.is_self_join,
                 symmetric=leaf.heuristics.symmetric,
                 exact_key_short_circuit=list(leaf.heuristics.exact_key_short_circuit),
                 max_pairs=leaf.heuristics.max_pairs,
+                extra_pair_predicate=extra_pred,
             )
-            exprs.append(build_leaf_sql(params))
-            leaf_tables.append(target)
             logger.info(
-                "Leaf '%s' [%s × %s]: %d blocking path(s), %d score term(s), "
-                "threshold=%s, short_circuit=%s",
-                leaf.name, leaf.left, leaf.right,
-                len(blocking_paths), len(score_terms),
-                params.threshold, params.exact_key_short_circuit,
+                "Leaf '%s' [%s × %s] greatest: %d blocking path(s), %d term(s), "
+                "threshold=%s, touched_only=%s, entity_level=%s",
+                leaf.name, leaf.left, leaf.right, len(blocking_paths),
+                len(score_terms), params.threshold, leaf.heuristics.touched_only,
+                leaf.heuristics.entity_level,
             )
+            return [*pre_exprs, build_leaf_sql(params)], target, left_table, right_table
 
-        if leaf_tables:
-            exprs.append(self._build_union_sql(leaf_tables))
+        # Production scoring (sum / fellegi_sunter): blocking → candidates →
+        # reuse the matching tier's full scorer against the leaf's sources.
+        from bq_entity_resolution.stages.matching import MatchingStage
+
+        tier = self._resolve_scoring_tier(leaf)
+        if tier is None:
+            logger.warning(
+                "Leaf '%s' (%s) has no tier to score with — skipping",
+                leaf.name, leaf.scoring,
+            )
+            return [], None, None, None
+        cand_table = leaf_candidates_table(self._config, leaf.name)
+        cand_sql = build_leaf_candidates_sql(
+            candidates_table=cand_table,
+            left_table=left_table,
+            right_table=right_table,
+            blocking_paths=blocking_paths,
+            left_predicate=left_pred,
+            right_predicate=right_pred,
+            is_self_join=leaf.is_self_join,
+            symmetric=leaf.heuristics.symmetric,
+            extra_pair_predicate=extra_pred,
+            max_pairs=leaf.heuristics.max_pairs,
+        )
+        mstage = MatchingStage(
+            tier,
+            self._tier_index(tier),
+            self._config,
+            candidates_table_override=cand_table,
+            matches_table_override=target,
+            left_source_override=left_table,
+            right_source_override=right_table,
+        )
+        scoring_exprs = mstage.plan_scoring(leaf.scoring)
+        logger.info(
+            "Leaf '%s' [%s × %s] %s via tier '%s': %d blocking path(s), "
+            "touched_only=%s, entity_level=%s",
+            leaf.name, leaf.left, leaf.right, leaf.scoring, tier.name,
+            len(blocking_paths), leaf.heuristics.touched_only,
+            leaf.heuristics.entity_level,
+        )
+        return [*pre_exprs, cand_sql, *scoring_exprs], target, left_table, right_table
+
+    def plan(self, **kwargs: Any) -> list[SQLExpression]:
+        """Generate per-leaf candidate-pair SQL + the union into all_matches.
+
+        Each leaf is scored by its ``scoring`` (``greatest`` inline, or the
+        production ``sum``/``fellegi_sunter`` engine via a candidate table). When
+        any selected leaf is a repair leaf (scheduled or ``touched_only``), a
+        repair-watermark DDL is emitted first and a watermark-advance INSERT
+        last, so ``touched_only`` self-restricts against the prior repair time.
+        """
+        if not self._leaves:
+            return []
+
+        exprs: list[SQLExpression] = []
+        # (leaf_name, leaf_pairs_table, has_method_column)
+        leaf_specs: list[tuple[str, str, bool]] = []
+        metric_inputs: list[LeafMetricInput] = []
+        emitted_repair_leaves: list[str] = []
+        repair_table = leaf_repair_watermarks_table(self._config)
+
+        if any(self._is_repair_leaf(leaf) for leaf in self._leaves):
+            exprs.append(build_repair_watermark_ddl(repair_table))
+
+        for leaf in self._leaves:
+            leaf_exprs, target, left_src, right_src = self._plan_one_leaf(
+                leaf, repair_table
+            )
+            if target is None:
+                continue
+            exprs.extend(leaf_exprs)
+            # The greatest scorer's table carries a match_method column (e.g.
+            # 'short_circuit'); the sum/F-S matches table does not.
+            leaf_specs.append((leaf.name, target, leaf.scoring == "greatest"))
+            if left_src and right_src:
+                metric_inputs.append(
+                    LeafMetricInput(
+                        leaf_name=leaf.name,
+                        pairs_table=target,
+                        left_table=left_src,
+                        right_table=right_src,
+                        is_self_join=leaf.is_self_join,
+                    )
+                )
+            if self._is_repair_leaf(leaf):
+                emitted_repair_leaves.append(leaf.name)
+
+        if leaf_specs:
+            exprs.append(self._build_union_sql(leaf_specs))
+        if emitted_repair_leaves:
+            exprs.append(
+                build_advance_repair_watermark_sql(repair_table, emitted_repair_leaves)
+            )
+        # Optional per-leaf effectiveness metrics (candidate pairs, reduction
+        # ratio), gated on monitoring config so default runs are unchanged.
+        if metric_inputs and self._config.monitoring.blocking_metrics.enabled:
+            exprs.append(
+                build_leaf_metrics_sql(leaf_metrics_table(self._config), metric_inputs)
+            )
         return exprs
 
-    def _build_union_sql(self, leaf_tables: list[str]) -> SQLExpression:
+    def _build_union_sql(
+        self, leaf_specs: list[tuple[str, str, bool]]
+    ) -> SQLExpression:
         """UNION ALL every leaf's pairs into the all_matches table.
 
-        Tagged by ``match_leaf`` and shaped with the score/tier columns
-        clustering expects (``match_tier_name`` carries the leaf name so
-        leaf-aware tooling and clustering metrics keep working unchanged).
+        Normalises across scorers: every leaf-pairs table (greatest *and*
+        sum/F-S matches schema) carries ``left_entity_uid``, ``right_entity_uid``
+        and ``match_total_score``; ``match_leaf`` is emitted as a per-branch
+        literal so the union is independent of the scorer's extra columns.
+        ``match_method`` is read from the greatest table (preserving
+        ``short_circuit``) and synthesised as ``'compare'`` for sum/F-S leaves.
+        ``match_tier_name`` carries the leaf name so leaf-aware tooling and
+        clustering metrics keep working unchanged.
         """
         target = all_matches_table(self._config)
-        selects = [
-            (
+        selects = []
+        for name, tbl, has_method in leaf_specs:
+            leaf_lit = sql_escape(name)
+            method_col = MATCH_METHOD if has_method else "'compare'"
+            selects.append(
                 f"SELECT {LEFT_ENTITY_UID}, {RIGHT_ENTITY_UID}, "
-                f"{MATCH_TOTAL_SCORE}, {MATCH_LEAF}, {MATCH_METHOD} "
+                f"{MATCH_TOTAL_SCORE}, '{leaf_lit}' AS {MATCH_LEAF}, "
+                f"{method_col} AS {MATCH_METHOD} "
                 f"FROM `{tbl}`"
             )
-            for tbl in leaf_tables
-        ]
         union = "\n  UNION ALL\n  ".join(selects)
         sql = (
             f"CREATE OR REPLACE TABLE `{target}` AS\n"

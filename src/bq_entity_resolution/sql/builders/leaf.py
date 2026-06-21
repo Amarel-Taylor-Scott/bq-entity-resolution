@@ -57,6 +57,7 @@ __all__ = [
     "LeafScoreTerm",
     "LeafSQLParams",
     "build_leaf_sql",
+    "build_leaf_candidates_sql",
 ]
 
 
@@ -118,6 +119,11 @@ class LeafSQLParams:
     symmetric: bool = True
     exact_key_short_circuit: list[str] = field(default_factory=list)
     max_pairs: int | None = None
+    # An extra boolean predicate over ``l.``/``r.`` aliases AND-ed onto every
+    # join branch (e.g. the ``touched_only`` "at least one endpoint changed
+    # since last repair" guard for an ``old×old`` self-join). Pre-validated by
+    # the stage that builds it.
+    extra_pair_predicate: str | None = None
 
     def __post_init__(self) -> None:
         validate_table_ref(self.target_table)
@@ -181,6 +187,63 @@ def _partition_cte(name: str, table: str, predicate: str | None) -> str:
     return f"{name} AS (SELECT * FROM `{table}`{where})"
 
 
+def build_leaf_candidates_sql(
+    *,
+    candidates_table: str,
+    left_table: str,
+    right_table: str,
+    blocking_paths: list[LeafBlockingPath],
+    left_predicate: str | None = None,
+    right_predicate: str | None = None,
+    is_self_join: bool = False,
+    symmetric: bool = True,
+    extra_pair_predicate: str | None = None,
+    max_pairs: int | None = None,
+) -> SQLExpression:
+    """Build a leaf's candidate-pair table (blocking only, no scoring).
+
+    Emits ``(left_entity_uid, right_entity_uid)`` from the leaf's blocking join +
+    self-join/cross-partition guard (+ optional ``touched_only`` predicate). This
+    feeds the production sum / Fellegi-Sunter scoring builders so a leaf can reuse
+    the full scoring engine (soft signals, hard negatives, banding) instead of the
+    lightweight ``GREATEST`` scorer.
+    """
+    validate_table_ref(candidates_table)
+    validate_table_ref(left_table)
+    validate_table_ref(right_table)
+    if not blocking_paths:
+        raise ValueError("build_leaf_candidates_sql requires at least one blocking path")
+
+    if is_self_join and symmetric:
+        guard = f"l.{ENTITY_UID} < r.{ENTITY_UID}"
+    else:
+        guard = f"l.{ENTITY_UID} != r.{ENTITY_UID}"
+    if extra_pair_predicate:
+        guard = f"{guard} AND ({extra_pair_predicate})"
+    blocking = _blocking_clause(blocking_paths)
+
+    parts: list[str] = []
+    parts.append(f"CREATE OR REPLACE TABLE `{candidates_table}` AS")
+    parts.append("")
+    parts.append("WITH")
+    parts.append(_partition_cte("leaf_l", left_table, left_predicate) + ",")
+    parts.append(_partition_cte("leaf_r", right_table, right_predicate))
+    parts.append(", leaf_candidates AS (")
+    parts.append("  SELECT DISTINCT")
+    parts.append(f"    l.{ENTITY_UID} AS {LEFT_ENTITY_UID},")
+    parts.append(f"    r.{ENTITY_UID} AS {RIGHT_ENTITY_UID}")
+    parts.append("  FROM leaf_l l")
+    parts.append("  JOIN leaf_r r")
+    parts.append(f"    ON ({blocking})")
+    parts.append(f"    AND {guard}")
+    parts.append(")")
+    parts.append("SELECT * FROM leaf_candidates")
+    if max_pairs is not None:
+        parts.append(f"ORDER BY {LEFT_ENTITY_UID}, {RIGHT_ENTITY_UID}")
+        parts.append(f"LIMIT {max_pairs}")
+    return SQLExpression.from_raw("\n".join(parts))
+
+
 def build_leaf_sql(params: LeafSQLParams) -> SQLExpression:
     """Build the candidate-pair SQL for a single leaf.
 
@@ -192,6 +255,10 @@ def build_leaf_sql(params: LeafSQLParams) -> SQLExpression:
     """
     leaf_lit = sql_escape(params.leaf_name)
     guard = _guard(params)
+    if params.extra_pair_predicate:
+        # AND-ed onto every join branch (e.g. touched_only's
+        # "at least one endpoint changed since last repair" guard).
+        guard = f"{guard} AND ({params.extra_pair_predicate})"
     blocking = _blocking_clause(params.blocking_paths)
     score = _score_expr(params.score_terms)
 

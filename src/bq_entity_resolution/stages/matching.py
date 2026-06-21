@@ -81,11 +81,23 @@ class MatchingStage(Stage):
         tier: MatchingTierConfig,
         tier_index: int,
         config: PipelineConfig,
+        *,
+        candidates_table_override: str | None = None,
+        matches_table_override: str | None = None,
+        left_source_override: str | None = None,
+        right_source_override: str | None = None,
     ):
         self._tier = tier
         self._tier_index = tier_index
         self._config = config
         self._estimated_params: dict[str, Any] | None = None
+        # Overrides let a resolution leaf reuse this tier's scoring against the
+        # leaf's own candidate table and partition source tables (the left/right
+        # sides may differ, e.g. featured × canonical_index for new×old).
+        self._candidates_override = candidates_table_override
+        self._matches_override = matches_table_override
+        self._left_source_override = left_source_override
+        self._right_source_override = right_source_override
 
     @property
     def name(self) -> str:
@@ -93,10 +105,13 @@ class MatchingStage(Stage):
 
     @property
     def inputs(self) -> dict[str, TableRef]:
+        cand = self._candidates_override or candidates_table(
+            self._config, self._tier.name
+        )
         return {
             "candidates": TableRef(
                 name=f"candidates_{self._tier.name}",
-                fq_name=candidates_table(self._config, self._tier.name),
+                fq_name=cand,
             ),
             "featured": TableRef(
                 name="featured",
@@ -106,7 +121,9 @@ class MatchingStage(Stage):
 
     @property
     def outputs(self) -> dict[str, TableRef]:
-        target = matches_table(self._config, self._tier.name)
+        target = self._matches_override or matches_table(
+            self._config, self._tier.name
+        )
         return {
             "matches": TableRef(
                 name=f"matches_{self._tier.name}",
@@ -122,13 +139,19 @@ class MatchingStage(Stage):
     def plan(self, **kwargs: Any) -> list[SQLExpression]:
         """Generate matching/scoring SQL."""
         logger.debug("Planning %s stage", self.__class__.__name__)
-        tier = self._tier
-        is_fs = tier.threshold.method == "fellegi_sunter"
+        return self.plan_scoring(self._tier.threshold.method)
 
-        if is_fs:
+    def plan_scoring(self, method: str | None = None) -> list[SQLExpression]:
+        """Generate scoring SQL for an explicit method.
+
+        ``method`` defaults to the tier's ``threshold.method``. Exposed so a
+        resolution leaf can reuse this tier's scoring config (comparisons,
+        signals, banding) against its own candidate table and partition source
+        tables — see ``stages/leaf_resolution.py``.
+        """
+        if (method or self._tier.threshold.method) == "fellegi_sunter":
             return self._plan_fellegi_sunter()
-        else:
-            return self._plan_sum_scoring()
+        return self._plan_sum_scoring()
 
     def _plan_sum_scoring(self) -> list[SQLExpression]:
         """Generate sum-based scoring SQL."""
@@ -191,6 +214,8 @@ class MatchingStage(Stage):
             tf_table=tf_table,
             audit_trail_enabled=self._audit_trail_enabled(),
             score_bands=signals["score_bands"],
+            left_source_table=self._left_source_override,
+            right_source_table=self._right_source_override,
         )
 
         return [build_sum_scoring_sql(scoring_params)]
@@ -253,6 +278,8 @@ class MatchingStage(Stage):
             tf_table=tf_table,
             audit_trail_enabled=self._audit_trail_enabled(),
             score_bands=signals["score_bands"],
+            left_source_table=self._left_source_override,
+            right_source_table=self._right_source_override,
         )
 
         return [build_fellegi_sunter_sql(scoring_params)]

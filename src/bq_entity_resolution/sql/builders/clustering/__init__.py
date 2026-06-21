@@ -27,6 +27,7 @@ from bq_entity_resolution.sql.builders.clustering.incremental import (
     build_canonical_index_init_sql,
     build_incremental_cluster_sql,
     build_populate_canonical_index_sql,
+    build_repair_cluster_update_sql,
 )
 from bq_entity_resolution.sql.builders.clustering.metrics import (
     ClusterMetricsParams,
@@ -48,6 +49,7 @@ __all__ = [
     "build_canonical_index_init_sql",
     "build_incremental_cluster_sql",
     "build_populate_canonical_index_sql",
+    "build_repair_cluster_update_sql",
     # Alternative strategies
     "BestMatchClusteringParams",
     "StarClusteringParams",

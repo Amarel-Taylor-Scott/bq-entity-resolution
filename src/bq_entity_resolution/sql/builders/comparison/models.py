@@ -84,7 +84,15 @@ class Threshold:
 
 @dataclass(frozen=True)
 class SumScoringParams:
-    """Parameters for sum-based scoring."""
+    """Parameters for sum-based scoring.
+
+    ``source_table`` is the default table both sides of a pair are drawn from
+    (intra-batch matching). ``left_source_table``/``right_source_table`` override
+    each side independently — used by cross-partition resolution leaves where the
+    left side is the new batch (``featured``) and the right side is the canonical
+    index. When unset, both sides use ``source_table`` (byte-identical to the
+    historical single-table behaviour).
+    """
     tier_name: str
     tier_index: int
     matches_table: str
@@ -101,6 +109,8 @@ class SumScoringParams:
     audit_trail_enabled: bool = False
     score_bands: list[ScoreBand] = field(default_factory=list)
     confidence_method: str = "ratio"  # "ratio" or "sigmoid"
+    left_source_table: str | None = None
+    right_source_table: str | None = None
 
     def __post_init__(self) -> None:
         validate_table_ref(self.matches_table)
@@ -108,11 +118,23 @@ class SumScoringParams:
         validate_table_ref(self.source_table)
         if self.tf_table is not None:
             validate_table_ref(self.tf_table)
+        if self.left_source_table is not None:
+            validate_table_ref(self.left_source_table)
+        if self.right_source_table is not None:
+            validate_table_ref(self.right_source_table)
         if self.confidence_method not in ("ratio", "sigmoid"):
             raise ValueError(
                 f"confidence_method must be 'ratio' or 'sigmoid', "
                 f"got '{self.confidence_method}'"
             )
+
+    @property
+    def eff_left_source(self) -> str:
+        return self.left_source_table or self.source_table
+
+    @property
+    def eff_right_source(self) -> str:
+        return self.right_source_table or self.source_table
 
 
 @dataclass(frozen=True)
@@ -132,6 +154,8 @@ class FellegiSunterParams:
     tf_table: str | None = None
     audit_trail_enabled: bool = False
     score_bands: list[ScoreBand] = field(default_factory=list)
+    left_source_table: str | None = None
+    right_source_table: str | None = None
 
     def __post_init__(self) -> None:
         validate_table_ref(self.matches_table)
@@ -139,6 +163,18 @@ class FellegiSunterParams:
         validate_table_ref(self.source_table)
         if self.tf_table is not None:
             validate_table_ref(self.tf_table)
+        if self.left_source_table is not None:
+            validate_table_ref(self.left_source_table)
+        if self.right_source_table is not None:
+            validate_table_ref(self.right_source_table)
+
+    @property
+    def eff_left_source(self) -> str:
+        return self.left_source_table or self.source_table
+
+    @property
+    def eff_right_source(self) -> str:
+        return self.right_source_table or self.source_table
 
 
 __all__ = [

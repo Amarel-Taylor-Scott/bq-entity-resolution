@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import bisect
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from bq_entity_resolution.config.schema import PipelineConfig
@@ -171,6 +172,8 @@ def build_pipeline_dag(
     config: PipelineConfig,
     stage_overrides: dict[str, Stage] | None = None,
     exclude_stages: set[str] | None = None,
+    leaf_repair: bool = False,
+    leaf_only: Sequence[str] | None = None,
 ) -> StageDAG:
     """Build a complete pipeline DAG from config.
 
@@ -220,7 +223,8 @@ def build_pipeline_dag(
     use_leaves = bool(getattr(config, "leaves", None))
 
     if use_leaves:
-        leaf_stage = LeafResolutionStage(config)
+        selected_leaves = config.select_leaves(repair=leaf_repair, only=leaf_only)
+        leaf_stage = LeafResolutionStage(config, leaves=selected_leaves)
         stages.append(leaf_stage)
         prev_matching_name = leaf_stage.name
     else:

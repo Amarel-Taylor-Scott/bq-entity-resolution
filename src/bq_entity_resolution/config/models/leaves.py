@@ -87,8 +87,20 @@ class LeafHeuristics(BaseModel):
     threshold_override: float | None = Field(default=None, ge=0.0, le=1.0)
     # Self-join (left == right) emits each unordered pair once.
     symmetric: bool = True
+    # new×old: compare a new record against each canonical *entity* (one
+    # consensus row per cluster — most-frequent value per field) instead of
+    # against every historical *record*. Yields cleaner consensus scoring and
+    # removes redundant pairs against multiple members of the same entity.
+    # Trade-off: blocking is via the consensus value, so a new record matching
+    # only a minority member's blocking key won't block — opt in per leaf.
+    entity_level: bool = False
     # old×old repair: only re-examine entities changed since the last repair run.
     touched_only: bool = False
+    # Timestamp column used to decide whether an entity is "touched" (loaded /
+    # updated) since the last repair. Must exist on the canonical/old partition
+    # (the canonical index mirrors `featured`, so `pipeline_loaded_at` is the
+    # default). Only consulted when ``touched_only`` is True.
+    touched_column: str = "pipeline_loaded_at"
     # Safety cap on candidate pairs produced by this leaf (None = unlimited).
     max_pairs: int | None = Field(default=None, ge=1)
 
@@ -98,6 +110,11 @@ class LeafHeuristics(BaseModel):
         for key in v:
             validate_identifier(key, context="short-circuit key")
         return v
+
+    @field_validator("touched_column")
+    @classmethod
+    def _validate_touched_column(cls, v: str) -> str:
+        return validate_identifier(v, context="touched_only column")
 
 
 class LeafDef(BaseModel):
@@ -119,6 +136,16 @@ class LeafDef(BaseModel):
     right: str
     blocking: TierBlockingConfig | None = None
     matching_tiers: list[str] | None = None
+    # Scorer for this leaf's candidate pairs:
+    #   - "greatest"        → lightweight GREATEST(weighted booleans) scorer built
+    #     into the leaf SQL (fast pre-screen; the historical leaf behaviour).
+    #   - "sum"/"fellegi_sunter" → reuse the *production* scoring engine (soft
+    #     signals, hard negatives, score banding, auto-match, TF) against the
+    #     leaf's candidate table, so the leaf threshold is on the same scale as
+    #     the matching tier's ``min_score``. A leaf using these resolves to a
+    #     single tier (its named ``matching_tiers`` entry, else the first enabled
+    #     tier of the resolved method).
+    scoring: Literal["greatest", "sum", "fellegi_sunter"] = "greatest"
     heuristics: LeafHeuristics = Field(default_factory=LeafHeuristics)
     enabled: bool = True
     schedule: Literal["every_run", "manual", "cron"] = "every_run"
